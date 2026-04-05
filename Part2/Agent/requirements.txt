@@ -1,0 +1,4 @@
+# No third-party packages are required for deterministic mode.
+# Optional dependency for LLM-backed tool selection:
+# openai>=1.0.0
+# google-genai>=1.0.0

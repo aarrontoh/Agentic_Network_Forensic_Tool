@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forensic Agent Dashboard</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg-dark: #06090e;
+      --bg-deep: #0a0f1a;
+      --panel-bg: rgba(16, 23, 40, 0.7);
+      --panel-bg-solid: rgba(16, 23, 40, 0.92);
+      --panel-border: rgba(43, 76, 126, 0.4);
+      --primary-cyan: #00e5ff;
+      --primary-glow: rgba(0, 229, 255, 0.2);
+      --primary-blue: #2979ff;
+      --success-green: #00e676;
+      --success-glow: rgba(0, 230, 118, 0.2);
+      --warning-amber: #ffb300;
+      --error-red: #ff3d00;
+      --purple: #b388ff;
+      --text-main: #f0f4f8;
+      --text-muted: #8a9bb2;
+      --text-dim: #556680;
+      --font-ui: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-ui);
+      line-height: 1.6;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ── Animated Particle Background ── */
+    #particles-canvas {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      z-index: 0; pointer-events: none;
+    }
+
+    #app-root {
+      position: relative; z-index: 1;
+      max-width: 1500px; margin: 0 auto; padding: 24px 32px 60px;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+      background: linear-gradient(135deg, rgba(16,23,40,0.95) 0%, rgba(10,14,24,0.8) 100%);
+      padding: 20px 28px; border-radius: 16px;
+      border: 1px solid var(--panel-border);
+      border-left: 4px solid var(--primary-cyan);
+      margin-bottom: 0;
+      box-shadow: 0 4px 40px rgba(0,0,0,0.4);
+    }
+    .header h1 {
+      font-size: 26px; font-weight: 800; letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #fff 0%, var(--primary-cyan) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .meta { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    .badge {
+      display: inline-flex; align-items: center; padding: 4px 12px;
+      border-radius: 20px; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1.2px;
+    }
+    .badge-starting { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.3); }
+    .badge-preprocessing { background: rgba(0,229,255,0.1); color: var(--primary-cyan); border: 1px solid var(--primary-cyan); box-shadow: 0 0 10px var(--primary-glow); }
+    .badge-analyzing { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid var(--success-green); box-shadow: 0 0 10px var(--success-glow); animation: pulse-green 2s infinite; }
+    .badge-reporting { background: rgba(255,179,0,0.1); color: var(--warning-amber); border: 1px solid var(--warning-amber); }
+    .badge-complete { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid var(--success-green); }
+    .badge-waiting { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.3); }
+    .badge-HIGH { background: rgba(255,61,0,0.15); color: var(--error-red); border: 1px solid var(--error-red); }
+    .badge-MEDIUM { background: rgba(255,179,0,0.15); color: var(--warning-amber); border: 1px solid var(--warning-amber); }
+    .badge-LOW { background: rgba(0,230,118,0.15); color: var(--success-green); border: 1px solid var(--success-green); }
+
+    /* ── Tab Navigation ── */
+    .tab-nav {
+      display: flex; gap: 4px; padding: 6px;
+      background: rgba(10,15,26,0.8);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-top: none;
+      border-radius: 0 0 16px 16px;
+      margin-bottom: 28px;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .tab-btn {
+      flex: 1; padding: 12px 16px;
+      background: transparent; border: 1px solid transparent; border-radius: 10px;
+      color: var(--text-muted); font-family: var(--font-ui);
+      font-size: 12px; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase;
+      cursor: pointer; transition: all 0.3s ease; position: relative;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .tab-btn:hover {
+      color: var(--text-main); background: rgba(255,255,255,0.03);
+      border-color: rgba(255,255,255,0.06);
+    }
+    .tab-btn.active {
+      color: var(--primary-cyan);
+      background: rgba(0,229,255,0.06);
+      border-color: rgba(0,229,255,0.25);
+      box-shadow: 0 0 20px rgba(0,229,255,0.08);
+    }
+    .tab-btn.active::after {
+      content: ''; position: absolute; bottom: -1px; left: 20%; right: 20%;
+      height: 2px; background: var(--primary-cyan);
+      box-shadow: 0 0 8px var(--primary-cyan);
+      border-radius: 2px;
+    }
+    .tab-icon { font-size: 14px; }
+    .tab-notif {
+      font-size: 9px; background: var(--error-red); color: #fff;
+      padding: 1px 6px; border-radius: 10px; font-weight: 700;
+      min-width: 18px; text-align: center;
+    }
+
+    /* ── Tab Content ── */
+    .tab-content { display: none; animation: fadeSlideIn 0.35s ease; }
+    .tab-content.active { display: block; }
+
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Glassmorphic Panels ── */
+    .panel {
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px; padding: 24px; margin-bottom: 24px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+      transition: border-color 0.3s ease;
+    }
+    .panel:hover { border-color: rgba(0,229,255,0.3); }
+
+    h2 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 2px;
+      color: var(--primary-cyan); margin-bottom: 16px; font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+    }
+    h2::before {
+      content: ''; display: inline-block; width: 8px; height: 8px;
+      background: var(--primary-cyan); box-shadow: 0 0 8px var(--primary-glow);
+    }
+
+    /* ════════════════════════════════════════════
+       TAB 1: LIVE MONITOR
+       ════════════════════════════════════════════ */
+    .progress-bar-wrap {
+      background: rgba(0,0,0,0.5); border-radius: 8px; height: 12px;
+      margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05);
+      overflow: hidden; position: relative;
+    }
+    .progress-bar-fill {
+      height: 100%; width: 0%; border-radius: 8px;
+      transition: width 0.6s cubic-bezier(0.16,1,0.3,1);
+      background: linear-gradient(90deg, #007bb5 0%, var(--primary-cyan) 100%);
+      box-shadow: 0 0 15px var(--primary-glow);
+    }
+    .progress-bar-fill.active::after {
+      content: ''; position: absolute; top: 0; left: 0; bottom: 0; right: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+      animation: shimmer 1.5s infinite;
+    }
+    .progress-label {
+      font-size: 13px; color: var(--text-muted); font-family: var(--font-mono);
+      display: flex; justify-content: space-between;
+    }
+
+    .pipeline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+    .step {
+      padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 600;
+      border: 1px solid var(--panel-border); background: rgba(0,0,0,0.3);
+      color: var(--text-muted); transition: all 0.3s;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .step.done { background: rgba(0,230,118,0.1); border-color: rgba(0,230,118,0.4); color: var(--success-green); }
+    .step.active { background: rgba(0,229,255,0.1); border-color: var(--primary-cyan); color: var(--text-main); box-shadow: 0 0 12px var(--primary-glow); animation: pulse-border 2s infinite; }
+    .arrow { color: rgba(255,255,255,0.1); font-size: 14px; font-weight: bold; }
+
+    .findings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+    .finding-card {
+      background: linear-gradient(145deg, rgba(16,23,40,0.9), rgba(10,14,24,0.9));
+      border: 1px solid var(--panel-border); border-radius: 12px; padding: 20px;
+      transition: transform 0.3s cubic-bezier(0.175,0.885,0.32,1.275), box-shadow 0.3s ease;
+      position: relative; overflow: hidden;
+    }
+    .finding-card::before {
+      content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%;
+      background: var(--panel-border); transition: background 0.3s;
+    }
+    .finding-card.done::before { background: var(--primary-cyan); box-shadow: 0 0 10px var(--primary-glow); }
+    .finding-card:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.4); border-color: rgba(255,255,255,0.1); }
+    .finding-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .finding-qid { font-size: 24px; font-weight: 800; color: var(--text-main); opacity: 0.9; }
+    .finding-title { font-size: 14px; font-weight: 600; color: var(--primary-cyan); margin-bottom: 8px; }
+    .finding-summary { font-size: 13px; color: #b0c0d0; line-height: 1.6; margin-bottom: 12px; }
+    .finding-evidence { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 6px; display: inline-block; }
+    .finding-pending { font-size: 13px; color: var(--text-muted); font-style: italic; opacity: 0.7; }
+
+    .seg-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .seg-chip {
+      font-size: 10px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono);
+      border: 1px solid var(--panel-border); background: rgba(0,0,0,0.4); color: var(--text-muted);
+      transition: all 0.3s ease;
+    }
+    .seg-chip.ok { border-color: rgba(0,230,118,0.4); color: var(--success-green); background: rgba(0,230,118,0.05); }
+    .seg-chip.error { border-color: rgba(255,61,0,0.4); color: var(--error-red); background: rgba(255,61,0,0.05); }
+
+    .phase-label {
+      font-size: 11px; color: var(--text-muted); margin-bottom: 10px;
+      font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.5px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .phase-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: rgba(0,229,255,0.1); border: 1px solid rgba(0,229,255,0.3);
+      color: var(--primary-cyan); font-size: 10px; font-weight: 700;
+    }
+
+    .live-timeline-list { list-style: none; margin-top: 16px; position: relative; }
+    .live-timeline-list::before { content: ''; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.05); }
+    .live-timeline-list li { position: relative; padding: 12px 0 12px 28px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.02); }
+    .live-timeline-list li:last-child { border-bottom: none; }
+    .live-timeline-list li::before {
+      content: ''; position: absolute; left: 0; top: 16px; width: 12px; height: 12px;
+      border-radius: 50%; background: var(--bg-dark); border: 2px solid var(--primary-cyan);
+      box-shadow: 0 0 8px var(--primary-glow);
+    }
+    .live-timeline-list li:hover::before { background: var(--primary-cyan); }
+    .tl-ts { color: var(--primary-cyan); font-family: var(--font-mono); margin-right: 12px; font-size: 12px; opacity: 0.8; }
+
+    /* ════════════════════════════════════════════
+       TAB 2: FINDINGS
+       ════════════════════════════════════════════ */
+    .finding-full-card {
+      background: var(--panel-bg-solid);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px; margin-bottom: 20px;
+      overflow: hidden; transition: border-color 0.3s;
+    }
+    .finding-full-card:hover { border-color: rgba(0,229,255,0.35); }
+    .finding-full-header {
+      display: flex; align-items: center; gap: 16px; padding: 20px 24px;
+      cursor: pointer; user-select: none; transition: background 0.2s;
+    }
+    .finding-full-header:hover { background: rgba(255,255,255,0.02); }
+    .fq-letter {
+      font-size: 32px; font-weight: 800; font-family: var(--font-mono);
+      color: var(--primary-cyan); min-width: 50px; text-align: center;
+      text-shadow: 0 0 20px var(--primary-glow);
+    }
+    .fq-info { flex: 1; }
+    .fq-title { font-size: 16px; font-weight: 700; color: var(--text-main); margin-bottom: 4px; }
+    .fq-question { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+    .fq-chevron {
+      font-size: 18px; color: var(--text-dim); transition: transform 0.3s;
+    }
+    .finding-full-card.open .fq-chevron { transform: rotate(180deg); }
+    .fq-body {
+      max-height: 0; overflow: hidden; transition: max-height 0.4s ease;
+    }
+    .finding-full-card.open .fq-body { max-height: 3000px; }
+    .fq-body-inner { padding: 0 24px 24px; }
+
+    .fq-section-title {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px;
+      color: var(--primary-cyan); margin: 20px 0 10px; font-weight: 600;
+    }
+    .fq-summary-text { font-size: 14px; color: #c0d0e0; line-height: 1.7; }
+    .fq-mitre-chip {
+      display: inline-block; padding: 4px 12px; border-radius: 6px;
+      background: rgba(41,121,255,0.1); border: 1px solid rgba(41,121,255,0.3);
+      color: var(--primary-blue); font-size: 11px; font-weight: 600;
+      font-family: var(--font-mono); margin-right: 6px; margin-bottom: 6px;
+    }
+
+    .evidence-table {
+      width: 100%; border-collapse: collapse; margin-top: 8px;
+      font-size: 12px;
+    }
+    .evidence-table th {
+      text-align: left; padding: 10px 12px; font-size: 10px;
+      text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted);
+      border-bottom: 1px solid rgba(255,255,255,0.06); font-weight: 600;
+    }
+    .evidence-table td {
+      padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.03);
+      color: #b0c0d0; font-family: var(--font-mono); font-size: 11px;
+      vertical-align: top; max-width: 400px; word-break: break-word;
+    }
+    .evidence-table tr:hover td { background: rgba(0,229,255,0.02); }
+
+    .fq-limitations, .fq-next-steps {
+      list-style: none; margin-top: 6px;
+    }
+    .fq-limitations li, .fq-next-steps li {
+      font-size: 13px; color: var(--text-muted); padding: 4px 0 4px 16px;
+      position: relative;
+    }
+    .fq-limitations li::before { content: '!'; position: absolute; left: 0; color: var(--warning-amber); font-weight: 700; font-size: 11px; }
+    .fq-next-steps li::before { content: '>'; position: absolute; left: 0; color: var(--primary-cyan); font-family: var(--font-mono); font-weight: 700; }
+
+    .findings-empty {
+      text-align: center; padding: 80px 20px; color: var(--text-dim);
+      font-size: 14px;
+    }
+    .findings-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+
+    /* ════════════════════════════════════════════
+       TAB 3: REPORT
+       ════════════════════════════════════════════ */
+    .report-container {
+      background: var(--panel-bg-solid);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px; padding: 40px 48px;
+      max-width: 900px; margin: 0 auto;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.3);
+    }
+    .report-container h1 { font-size: 28px; font-weight: 800; color: var(--text-main); margin: 32px 0 16px; border-bottom: 2px solid rgba(0,229,255,0.2); padding-bottom: 12px; }
+    .report-container h1:first-child { margin-top: 0; }
+    .report-container h2 { font-size: 20px; font-weight: 700; color: var(--primary-cyan); margin: 28px 0 12px; letter-spacing: 0; text-transform: none; display: block; }
+    .report-container h2::before { display: none; }
+    .report-container h3 { font-size: 16px; font-weight: 600; color: var(--text-main); margin: 20px 0 8px; }
+    .report-container p { font-size: 14px; color: #b8c8d8; line-height: 1.8; margin-bottom: 12px; }
+    .report-container ul, .report-container ol { padding-left: 24px; margin-bottom: 12px; }
+    .report-container li { font-size: 14px; color: #b8c8d8; line-height: 1.8; margin-bottom: 4px; }
+    .report-container code {
+      background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.15);
+      padding: 2px 8px; border-radius: 4px; font-family: var(--font-mono);
+      font-size: 12px; color: var(--primary-cyan);
+    }
+    .report-container pre {
+      background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px; padding: 16px 20px; overflow-x: auto;
+      margin-bottom: 16px;
+    }
+    .report-container pre code {
+      background: none; border: none; padding: 0; font-size: 12px; color: #a0b8d0;
+    }
+    .report-container blockquote {
+      border-left: 3px solid var(--primary-cyan); padding: 8px 16px;
+      margin: 12px 0; background: rgba(0,229,255,0.03); border-radius: 0 8px 8px 0;
+    }
+    .report-container blockquote p { color: var(--text-muted); margin-bottom: 0; }
+    .report-container table {
+      width: 100%; border-collapse: collapse; margin-bottom: 16px;
+    }
+    .report-container table th {
+      text-align: left; padding: 10px 12px; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 1px; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .report-container table td {
+      padding: 10px 12px; font-size: 13px; color: #b0c0d0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .report-container hr {
+      border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 24px 0;
+    }
+    .report-container strong { color: var(--text-main); }
+    .report-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
+    .report-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+
+    /* ════════════════════════════════════════════
+       TAB 4: TIMELINE
+       ════════════════════════════════════════════ */
+    .timeline-vertical { position: relative; padding: 0 0 0 40px; }
+    .timeline-vertical::before {
+      content: ''; position: absolute; left: 19px; top: 0; bottom: 0;
+      width: 2px; background: linear-gradient(180deg, var(--primary-cyan), var(--panel-border), transparent);
+    }
+    .tl-event {
+      position: relative; margin-bottom: 4px; padding: 16px 20px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 10px; transition: all 0.3s ease;
+    }
+    .tl-event:hover {
+      border-color: rgba(0,229,255,0.3);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      transform: translateX(4px);
+    }
+    .tl-event::before {
+      content: ''; position: absolute; left: -29px; top: 20px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--bg-dark); border: 2px solid var(--text-dim);
+      transition: all 0.3s;
+      box-shadow: 0 0 0 4px var(--bg-dark);
+    }
+    .tl-event:hover::before { border-color: var(--primary-cyan); box-shadow: 0 0 0 4px var(--bg-dark), 0 0 10px var(--primary-glow); }
+
+    .tl-event.cat-initial_access::before { border-color: var(--error-red); }
+    .tl-event.cat-lateral_movement::before { border-color: var(--warning-amber); }
+    .tl-event.cat-exfiltration::before { border-color: var(--purple); }
+    .tl-event.cat-payload_delivery::before { border-color: var(--primary-blue); }
+    .tl-event.cat-c2::before { border-color: var(--error-red); }
+    .tl-event.cat-reconnaissance::before { border-color: var(--warning-amber); }
+
+    .tl-event-time {
+      font-size: 11px; font-family: var(--font-mono); color: var(--primary-cyan);
+      margin-bottom: 6px; opacity: 0.8;
+    }
+    .tl-event-title { font-size: 14px; font-weight: 600; color: var(--text-main); margin-bottom: 4px; }
+    .tl-event-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+    .tl-event-cat {
+      display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1px; padding: 2px 8px; border-radius: 4px; margin-top: 8px;
+    }
+    .tl-cat-initial_access { background: rgba(255,61,0,0.12); color: var(--error-red); border: 1px solid rgba(255,61,0,0.3); }
+    .tl-cat-lateral_movement { background: rgba(255,179,0,0.12); color: var(--warning-amber); border: 1px solid rgba(255,179,0,0.3); }
+    .tl-cat-exfiltration { background: rgba(179,136,255,0.12); color: var(--purple); border: 1px solid rgba(179,136,255,0.3); }
+    .tl-cat-payload_delivery { background: rgba(41,121,255,0.12); color: var(--primary-blue); border: 1px solid rgba(41,121,255,0.3); }
+    .tl-cat-c2 { background: rgba(255,61,0,0.12); color: var(--error-red); border: 1px solid rgba(255,61,0,0.3); }
+    .tl-cat-reconnaissance { background: rgba(255,179,0,0.12); color: var(--warning-amber); border: 1px solid rgba(255,179,0,0.3); }
+    .tl-cat-default { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.2); }
+
+    .timeline-legend {
+      display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px;
+    }
+    .legend-item {
+      display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted);
+    }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+    .timeline-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
+    .timeline-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+
+    /* ════════════════════════════════════════════
+       TAB 5: AGENT LOG
+       ════════════════════════════════════════════ */
+    .log-entry {
+      display: flex; gap: 14px; padding: 14px 18px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 10px; margin-bottom: 6px;
+      transition: all 0.2s ease; align-items: flex-start;
+    }
+    .log-entry:hover {
+      border-color: rgba(0,229,255,0.2);
+      background: rgba(16,23,40,0.85);
+    }
+    .log-type-badge {
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+      padding: 3px 10px; border-radius: 4px; white-space: nowrap; min-width: 80px;
+      text-align: center; flex-shrink: 0;
+    }
+    .log-type-tool_call { background: rgba(0,229,255,0.1); color: var(--primary-cyan); border: 1px solid rgba(0,229,255,0.25); }
+    .log-type-tool_result { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid rgba(0,230,118,0.25); }
+    .log-type-reasoning { background: rgba(179,136,255,0.1); color: var(--purple); border: 1px solid rgba(179,136,255,0.25); }
+    .log-type-decision { background: rgba(255,179,0,0.1); color: var(--warning-amber); border: 1px solid rgba(255,179,0,0.25); }
+    .log-type-error { background: rgba(255,61,0,0.1); color: var(--error-red); border: 1px solid rgba(255,61,0,0.25); }
+    .log-type-ingest { background: rgba(41,121,255,0.1); color: var(--primary-blue); border: 1px solid rgba(41,121,255,0.25); }
+    .log-type-default { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.2); }
+
+    .log-body { flex: 1; min-width: 0; }
+    .log-timestamp { font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 4px; }
+    .log-message { font-size: 13px; color: #b0c0d0; line-height: 1.6; }
+    .log-detail {
+      font-size: 11px; font-family: var(--font-mono); color: var(--text-dim);
+      background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px;
+      margin-top: 8px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .log-filter-bar {
+      display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .log-filter-btn {
+      padding: 5px 14px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border);
+      color: var(--text-muted); cursor: pointer; transition: all 0.2s;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .log-filter-btn:hover { border-color: rgba(255,255,255,0.1); color: var(--text-main); }
+    .log-filter-btn.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.06); }
+    .log-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
+    .log-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+
+    /* ── Spinner / Waiting ── */
+    #waiting {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 60vh; text-align: center; color: var(--primary-cyan);
+    }
+    #waiting p { font-size: 18px; font-weight: 300; letter-spacing: 2px; margin-top: 24px; animation: pulse-opacity 2s infinite; }
+    .cyber-spinner {
+      width: 60px; height: 60px; border: 3px solid transparent;
+      border-top-color: var(--primary-cyan); border-bottom-color: var(--success-green);
+      border-radius: 50%; animation: spin 1.5s cubic-bezier(0.68,-0.55,0.265,1.55) infinite;
+      position: relative;
+    }
+    .cyber-spinner::before {
+      content: ''; position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px;
+      border: 2px solid transparent; border-left-color: var(--warning-amber);
+      border-radius: 50%; animation: spin 1s linear infinite reverse;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+
+    /* ── Animations ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse-border { 0% { box-shadow: 0 0 0 0 var(--primary-glow); } 70% { box-shadow: 0 0 0 10px rgba(0,229,255,0); } 100% { box-shadow: 0 0 0 0 rgba(0,229,255,0); } }
+    @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 var(--success-glow); } 70% { box-shadow: 0 0 0 8px rgba(0,230,118,0); } 100% { box-shadow: 0 0 0 0 rgba(0,230,118,0); } }
+    @keyframes pulse-opacity { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes shimmer { 100% { transform: translateX(100%); } }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      #app-root { padding: 12px 16px 40px; }
+      .header { padding: 16px; }
+      .header h1 { font-size: 20px; }
+      .tab-btn { padding: 10px 8px; font-size: 10px; }
+      .tab-btn .tab-label { display: none; }
+      .report-container { padding: 24px; }
+      .findings-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="particles-canvas"></canvas>
+
+<div id="waiting">
+  <div class="cyber-spinner"></div>
+  <p>INITIALIZING ORCHESTRATION ENGINE...</p>
+</div>
+
+<div id="app-root" style="display:none;">
+  <!-- Header -->
+  <div class="header">
+    <div style="flex-grow:1;">
+      <h1 id="case-id">---</h1>
+      <div style="display:flex;gap:16px;margin-top:8px;">
+        <span class="meta" id="started-at"></span>
+        <span class="meta" id="updated-at"></span>
+      </div>
+    </div>
+    <span id="stage-badge" class="badge badge-waiting">waiting</span>
+  </div>
+
+  <!-- Tab Navigation -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="live">
+      <span class="tab-icon">&#9678;</span>
+      <span class="tab-label">Live Monitor</span>
+    </button>
+    <button class="tab-btn" data-tab="findings">
+      <span class="tab-icon">&#9632;</span>
+      <span class="tab-label">Findings</span>
+      <span class="tab-notif" id="findings-count" style="display:none">0</span>
+    </button>
+    <button class="tab-btn" data-tab="report">
+      <span class="tab-icon">&#9998;</span>
+      <span class="tab-label">Report</span>
+    </button>
+    <button class="tab-btn" data-tab="timeline">
+      <span class="tab-icon">&#8942;</span>
+      <span class="tab-label">Timeline</span>
+    </button>
+    <button class="tab-btn" data-tab="agentlog">
+      <span class="tab-icon">&#9881;</span>
+      <span class="tab-label">Agent Log</span>
+    </button>
+  </nav>
+
+  <!-- ═══ TAB 1: LIVE MONITOR ═══ -->
+  <div class="tab-content active" id="tab-live">
+    <div class="panel">
+      <h2>Global Progress Pipeline</h2>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="pcap-bar"></div>
+      </div>
+      <div class="progress-label">
+        <span id="pcap-label">---</span>
+        <span id="pcap-sublabel" style="opacity:0.7"></span>
+      </div>
+      <div style="margin-top:24px;">
+        <div class="pipeline" id="pipeline"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Autonomous Findings</h2>
+      <div class="findings-grid" id="findings-grid"></div>
+    </div>
+
+    <div class="panel" id="seg-section">
+      <h2>Ingest Pipeline Detail</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px 32px;">
+        <div>
+          <div class="phase-label"><span class="phase-num">1</span> ALERT INGESTION</div>
+          <div class="seg-list" id="alert-segs"></div>
+        </div>
+        <div>
+          <div class="phase-label"><span class="phase-num">2</span> ZEEK CORRELATION</div>
+          <div class="seg-list" id="zeek-segs"></div>
+        </div>
+        <div>
+          <div class="phase-label"><span class="phase-num">3</span> PCAP TARGETING</div>
+          <div class="seg-list" id="pcap-index-segs"></div>
+        </div>
+        <div>
+          <div class="phase-label"><span class="phase-num">4</span> TSHARK DEEP ANALYSIS</div>
+          <div class="seg-list" id="tshark-segs"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="live-timeline-section" style="display:none">
+      <h2>Event Timeline</h2>
+      <ul class="live-timeline-list" id="live-timeline-list"></ul>
+    </div>
+  </div>
+
+  <!-- ═══ TAB 2: FINDINGS ═══ -->
+  <div class="tab-content" id="tab-findings">
+    <div id="findings-full-container"></div>
+  </div>
+
+  <!-- ═══ TAB 3: REPORT ═══ -->
+  <div class="tab-content" id="tab-report">
+    <div id="report-full-container"></div>
+  </div>
+
+  <!-- ═══ TAB 4: TIMELINE ═══ -->
+  <div class="tab-content" id="tab-timeline">
+    <div id="timeline-full-container"></div>
+  </div>
+
+  <!-- ═══ TAB 5: AGENT LOG ═══ -->
+  <div class="tab-content" id="tab-agentlog">
+    <div id="agentlog-full-container"></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+// PARTICLE BACKGROUND
+// ═══════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('particles-canvas');
+  const ctx = canvas.getContext('2d');
+  let particles = [];
+  const PARTICLE_COUNT = 60;
+  const MAX_DIST = 140;
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: (Math.random() - 0.5) * 0.4,
+      r: Math.random() * 1.5 + 0.5,
+      a: Math.random() * 0.3 + 0.1
+    });
+  }
+
+  function animate() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < 0) p.x = canvas.width;
+      if (p.x > canvas.width) p.x = 0;
+      if (p.y < 0) p.y = canvas.height;
+      if (p.y > canvas.height) p.y = 0;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0, 229, 255, ${p.a})`;
+      ctx.fill();
+      for (let j = i + 1; j < particles.length; j++) {
+        const q = particles[j];
+        const dx = p.x - q.x, dy = p.y - q.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < MAX_DIST) {
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(q.x, q.y);
+          ctx.strokeStyle = `rgba(0, 229, 255, ${0.06 * (1 - dist/MAX_DIST)})`;
+          ctx.stroke();
+        }
+      }
+    }
+    requestAnimationFrame(animate);
+  }
+  animate();
+})();
+
+// ═══════════════════════════════════════════════
+// TAB SWITCHING
+// ═══════════════════════════════════════════════
+const tabBtns = document.querySelectorAll('.tab-btn');
+const tabContents = document.querySelectorAll('.tab-content');
+let activeTab = 'live';
+
+tabBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    if (tab === activeTab) return;
+    activeTab = tab;
+    tabBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    tabContents.forEach(c => c.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    // Load data for the tab on switch
+    if (tab === 'findings') loadFindings();
+    if (tab === 'report') loadReport();
+    if (tab === 'timeline') loadTimeline();
+    if (tab === 'agentlog') loadAgentLog();
+  });
+});
+
+// ═══════════════════════════════════════════════
+// LIVE MONITOR (Tab 1) — from progress.json
+// ═══════════════════════════════════════════════
+const TOOL_LABELS = {
+  initial_access: 'Initial Access Vector',
+  lateral_movement: 'Lateral Movement',
+  exfiltration: 'Data Exfiltration',
+  payload_delivery: 'Payload Delivery',
+  timeline: 'Timeline Synthesis',
+};
+const ALL_TOOLS = ['initial_access', 'lateral_movement', 'exfiltration', 'payload_delivery'];
+
+function fmt(iso) {
+  if (!iso) return '---';
+  try {
+    const d = new Date(iso + 'Z');
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  } catch { return iso; }
+}
+
+function renderLive(d) {
+  document.getElementById('waiting').style.display = 'none';
+  document.getElementById('app-root').style.display = 'block';
+
+  document.getElementById('case-id').textContent = (d.case_id || '---').toUpperCase();
+  document.getElementById('started-at').textContent = 'SYS_START: ' + fmt(d.started_at);
+  document.getElementById('updated-at').textContent = 'LAST_SYNC: ' + fmt(d.updated_at);
+
+  const stage = d.stage || 'waiting';
+  const badge = document.getElementById('stage-badge');
+  badge.textContent = stage;
+  badge.className = 'badge badge-' + stage;
+
+  // PCAP progress
+  const pp = d.pcap_progress || {};
+  const done = pp.done || 0, total = pp.total || 0;
+  const pct = total > 0 ? Math.round(done / total * 100) : ((stage !== 'preprocessing' && stage !== 'starting') ? 100 : 0);
+  const pcapBar = document.getElementById('pcap-bar');
+  pcapBar.style.width = pct + '%';
+  pcapBar.classList.toggle('active', stage === 'preprocessing' || stage === 'analyzing');
+
+  let subLabel = '';
+  let phasePrefix = '';
+  if (stage === 'preprocessing') {
+    if (pp.phase === 'capinfos') phasePrefix = '[CAPINFOS] ';
+    if (pp.phase === 'zeek') phasePrefix = '[ZEEK] ';
+    if (pp.phase === 'tshark') phasePrefix = '[TSHARK] ';
+  }
+  const label = total > 0 ? `${done} / ${total} FILES (${pct}%)` : ((stage !== 'preprocessing' && stage !== 'starting') ? 'SYSTEM COMPLETE' : 'INITIALIZING PRE-SCAN');
+  if (pp.current && stage === 'preprocessing') subLabel = phasePrefix + pp.current.split('/').pop();
+  document.getElementById('pcap-label').textContent = label;
+  document.getElementById('pcap-sublabel').textContent = subLabel;
+
+  // Pipeline
+  const completed = d.completed_tools || [];
+  const pipeline = document.getElementById('pipeline');
+  pipeline.innerHTML = '';
+  const pipelineItems = ['preprocessing', ...ALL_TOOLS, 'timeline'];
+  pipelineItems.forEach((step, i) => {
+    if (i > 0) pipeline.innerHTML += '<span class="arrow">&rsaquo;</span>';
+    const done_step =
+      step === 'preprocessing' ? stage !== 'starting' && stage !== 'preprocessing' :
+      step === 'timeline' ? completed.includes('timeline') :
+      completed.includes(step);
+    const active_step =
+      step === 'preprocessing' ? stage === 'preprocessing' :
+      step === 'timeline' ? stage === 'reporting' || stage === 'complete' :
+      stage === 'analyzing' && !completed.includes(step) && completed.length === ALL_TOOLS.indexOf(step);
+    const cls = done_step ? 'step done' : active_step ? 'step active' : 'step';
+    const icon = done_step ? '&#10003; ' : active_step ? '&#10227; ' : '&bull; ';
+    const lbl = step === 'preprocessing' ? 'Preprocessing' : (TOOL_LABELS[step] || step);
+    pipeline.innerHTML += `<span class="${cls}">${icon}${lbl}</span>`;
+  });
+
+  // Findings cards
+  const grid = document.getElementById('findings-grid');
+  grid.innerHTML = '';
+  const findings = d.findings || {};
+  const qids = { initial_access: 'A', lateral_movement: 'B', exfiltration: 'C', payload_delivery: 'D' };
+  ALL_TOOLS.forEach(tool => {
+    const qid = qids[tool];
+    const f = findings[qid];
+    if (f) {
+      grid.innerHTML += `
+        <div class="finding-card ${f.confidence === 'HIGH' ? 'done' : ''}">
+          <div class="finding-header">
+            <span class="finding-qid">PHASE ${qid}</span>
+            <span class="badge badge-${f.confidence}">CONFIDENCE: ${f.confidence}</span>
+          </div>
+          <div class="finding-title">${esc(f.title)}</div>
+          <div class="finding-summary">${esc(f.summary)}</div>
+          <div class="finding-evidence">EVIDENCE FOUND: ${f.evidence_count} &bull; ${esc(f.status)}</div>
+        </div>`;
+    } else {
+      grid.innerHTML += `
+        <div class="finding-card">
+          <div class="finding-header"><span class="finding-qid">PHASE ${qid}</span></div>
+          <div class="finding-title">${TOOL_LABELS[tool]}</div>
+          <div class="finding-pending">// Awaiting analysis context...</div>
+        </div>`;
+    }
+  });
+
+  // Ingest phase segments — all 4 phases tracked independently
+  const renderSegs = (segs, el) => {
+    el.innerHTML = '';
+    (segs || []).forEach(s => {
+      el.innerHTML += `<span class="seg-chip ${s.status}">${esc(s.segment)}</span>`;
+    });
+    if (!(segs || []).length) el.innerHTML = '<span style="color:var(--text-muted);font-size:12px;font-family:var(--font-mono)">Waiting...</span>';
+  };
+  renderSegs(d.alert_results, document.getElementById('alert-segs'));
+  renderSegs(d.zeek_results, document.getElementById('zeek-segs'));
+  renderSegs(d.pcap_index_results, document.getElementById('pcap-index-segs'));
+  renderSegs(d.tshark_results, document.getElementById('tshark-segs'));
+
+  // Live timeline
+  const tl = d.timeline;
+  const tlSection = document.getElementById('live-timeline-section');
+  if (tl && tl.length) {
+    tlSection.style.display = '';
+    const list = document.getElementById('live-timeline-list');
+    list.innerHTML = tl.slice(0, 50).map(e =>
+      `<li>
+        <span class="tl-ts">[${esc((e.ts || '').substring(0, 19))}]</span>
+        <span class="badge badge-${e.category || ''}" style="font-size:10px;padding:2px 8px;">${esc(e.title || '')}</span>
+        <span style="color:#b0c0d0;margin-left:8px;">${esc(e.summary || '')}</span>
+      </li>`
+    ).join('');
+    if (tl.length > 50) list.innerHTML += `<li style="color:var(--text-muted);font-size:12px;margin-top:12px">// +${tl.length - 50} more events</li>`;
+  } else {
+    tlSection.style.display = 'none';
+  }
+}
+
+// ═══════════════════════════════════════════════
+// TAB 2: FINDINGS — from findings.json
+// ═══════════════════════════════════════════════
+const QUESTION_MAP = {
+  A: 'What was the initial access vector used by the attacker?',
+  B: 'How did the attacker move laterally within the network?',
+  C: 'How was data exfiltrated from the network?',
+  D: 'How was the ransomware payload delivered to endpoints?',
+};
+
+let findingsCache = null;
+async function loadFindings() {
+  const container = document.getElementById('findings-full-container');
+  try {
+    const res = await fetch('findings.json?_=' + Date.now());
+    if (!res.ok) throw new Error('not found');
+    const data = await res.json();
+    findingsCache = data;
+    renderFindingsFull(data);
+  } catch {
+    if (!findingsCache) {
+      container.innerHTML = `<div class="findings-empty"><div class="empty-icon">&#128269;</div>No findings data available yet.<br>Run the agent to generate findings.</div>`;
+    }
+  }
+}
+
+function renderFindingsFull(data) {
+  const container = document.getElementById('findings-full-container');
+  // data can be { questions: { A: {...}, B: {...} } } or { A: {...}, B: {...} }
+  const questions = data.questions || data;
+  const letters = ['A', 'B', 'C', 'D'];
+  let count = 0;
+  let html = '';
+
+  letters.forEach(letter => {
+    const f = questions[letter];
+    if (!f) {
+      html += `
+        <div class="finding-full-card">
+          <div class="finding-full-header">
+            <div class="fq-letter">${letter}</div>
+            <div class="fq-info">
+              <div class="fq-title">Pending Analysis</div>
+              <div class="fq-question">${QUESTION_MAP[letter] || ''}</div>
+            </div>
+          </div>
+        </div>`;
+      return;
+    }
+    count++;
+
+    // Evidence rows
+    const evidence = f.evidence || [];
+    let evidenceHTML = '';
+    if (evidence.length) {
+      evidenceHTML = `
+        <div class="fq-section-title">Evidence</div>
+        <table class="evidence-table">
+          <thead><tr><th>Source</th><th>Detail</th><th>Timestamp</th></tr></thead>
+          <tbody>
+            ${evidence.map(e => `<tr>
+              <td>${esc(e.source || e.type || '---')}</td>
+              <td>${esc(e.detail || e.description || e.value || '---')}</td>
+              <td>${esc(e.timestamp || e.ts || '---')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    // MITRE techniques
+    const techniques = f.mitre_techniques || f.techniques || [];
+    let mitreHTML = '';
+    if (techniques.length) {
+      mitreHTML = `<div class="fq-section-title">MITRE ATT&CK Techniques</div><div style="margin-top:6px;">${techniques.map(t => {
+        const label = typeof t === 'string' ? t : `${t.id || ''} ${t.name || ''}`;
+        return `<span class="fq-mitre-chip">${esc(label)}</span>`;
+      }).join('')}</div>`;
+    }
+
+    // Limitations
+    const limitations = f.limitations || [];
+    let limHTML = '';
+    if (limitations.length) {
+      limHTML = `<div class="fq-section-title">Limitations</div><ul class="fq-limitations">${limitations.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+    }
+
+    // Next steps
+    const nextSteps = f.next_steps || f.recommendations || [];
+    let nsHTML = '';
+    if (nextSteps.length) {
+      nsHTML = `<div class="fq-section-title">Next Steps</div><ul class="fq-next-steps">${nextSteps.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`;
+    }
+
+    const confBadge = f.confidence ? `<span class="badge badge-${f.confidence}" style="margin-left:auto;">${f.confidence}</span>` : '';
+
+    html += `
+      <div class="finding-full-card">
+        <div class="finding-full-header" onclick="this.parentElement.classList.toggle('open')">
+          <div class="fq-letter">${letter}</div>
+          <div class="fq-info">
+            <div class="fq-title">${esc(f.title || 'Finding ' + letter)}</div>
+            <div class="fq-question">${QUESTION_MAP[letter] || ''}</div>
+          </div>
+          ${confBadge}
+          <div class="fq-chevron">&#9660;</div>
+        </div>
+        <div class="fq-body">
+          <div class="fq-body-inner">
+            <div class="fq-section-title">Summary</div>
+            <div class="fq-summary-text">${esc(f.summary || f.answer || '---')}</div>
+            ${mitreHTML}
+            ${evidenceHTML}
+            ${limHTML}
+            ${nsHTML}
+          </div>
+        </div>
+      </div>`;
+  });
+
+  container.innerHTML = html;
+
+  // Update notification badge
+  const badge = document.getElementById('findings-count');
+  if (count > 0) { badge.style.display = ''; badge.textContent = count; }
+  else { badge.style.display = 'none'; }
+}
+
+// ═══════════════════════════════════════════════
+// TAB 3: REPORT — from report.md
+// ═══════════════════════════════════════════════
+let reportCache = null;
+async function loadReport() {
+  const container = document.getElementById('report-full-container');
+  try {
+    const res = await fetch('report.md?_=' + Date.now());
+    if (!res.ok) throw new Error('not found');
+    const md = await res.text();
+    reportCache = md;
+    container.innerHTML = `<div class="report-container">${renderMarkdown(md)}</div>`;
+  } catch {
+    if (!reportCache) {
+      container.innerHTML = `<div class="report-empty"><div class="empty-icon">&#128196;</div>No report available yet.<br>Run the agent to generate the report.</div>`;
+    }
+  }
+}
+
+// Lightweight markdown renderer (no external deps)
+function renderMarkdown(md) {
+  let html = md;
+
+  // Code blocks (```...```)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code>${esc(code.trimEnd())}</code></pre>`
+  );
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Headers
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Horizontal rules
+  html = html.replace(/^---+$/gm, '<hr>');
+
+  // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Blockquotes
+  html = html.replace(/^> (.+)$/gm, '<blockquote><p>$1</p></blockquote>');
+
+  // Tables
+  html = html.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/gm, (_, header, sep, body) => {
+    const ths = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => {
+      const tds = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
+  });
+
+  // Unordered lists
+  html = html.replace(/^(\s*)[-*] (.+)$/gm, '<li>$2</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+  // Paragraphs — wrap remaining loose text lines
+  html = html.replace(/^(?!<[a-z/])((?!<).+)$/gm, '<p>$1</p>');
+
+  // Clean up empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  return html;
+}
+
+// ═══════════════════════════════════════════════
+// TAB 4: TIMELINE — from timeline.json
+// ═══════════════════════════════════════════════
+const CAT_COLORS = {
+  initial_access: { color: '#ff3d00', label: 'Initial Access' },
+  lateral_movement: { color: '#ffb300', label: 'Lateral Movement' },
+  exfiltration: { color: '#b388ff', label: 'Exfiltration' },
+  payload_delivery: { color: '#2979ff', label: 'Payload Delivery' },
+  c2: { color: '#ff3d00', label: 'C2 Communication' },
+  reconnaissance: { color: '#ffb300', label: 'Reconnaissance' },
+};
+
+let timelineCache = null;
+async function loadTimeline() {
+  const container = document.getElementById('timeline-full-container');
+  try {
+    const res = await fetch('timeline.json?_=' + Date.now());
+    if (!res.ok) throw new Error('not found');
+    const data = await res.json();
+    timelineCache = data;
+    renderTimelineFull(data);
+  } catch {
+    if (!timelineCache) {
+      container.innerHTML = `<div class="timeline-empty"><div class="empty-icon">&#9202;</div>No timeline data available yet.<br>Run the agent to generate the timeline.</div>`;
+    }
+  }
+}
+
+function renderTimelineFull(data) {
+  const container = document.getElementById('timeline-full-container');
+  const events = Array.isArray(data) ? data : (data.events || []);
+
+  if (!events.length) {
+    container.innerHTML = `<div class="timeline-empty"><div class="empty-icon">&#9202;</div>Timeline is empty.</div>`;
+    return;
+  }
+
+  // Legend
+  const cats = [...new Set(events.map(e => e.category || 'default'))];
+  let legendHTML = '<div class="timeline-legend">';
+  cats.forEach(cat => {
+    const info = CAT_COLORS[cat] || { color: '#8a9bb2', label: cat };
+    legendHTML += `<div class="legend-item"><div class="legend-dot" style="background:${info.color}"></div>${info.label}</div>`;
+  });
+  legendHTML += '</div>';
+
+  // Events
+  let eventsHTML = '<div class="timeline-vertical">';
+  events.forEach(e => {
+    const cat = e.category || 'default';
+    const catClass = CAT_COLORS[cat] ? cat : 'default';
+    eventsHTML += `
+      <div class="tl-event cat-${catClass}">
+        <div class="tl-event-time">${esc((e.timestamp || e.ts || '').substring(0, 19))}</div>
+        <div class="tl-event-title">${esc(e.title || e.event || '---')}</div>
+        <div class="tl-event-desc">${esc(e.summary || e.description || '')}</div>
+        ${cat !== 'default' ? `<span class="tl-event-cat tl-cat-${catClass}">${esc((CAT_COLORS[cat] || {label:cat}).label)}</span>` : ''}
+      </div>`;
+  });
+  eventsHTML += '</div>';
+
+  container.innerHTML = legendHTML + eventsHTML;
+}
+
+// ═══════════════════════════════════════════════
+// TAB 5: AGENT LOG — from agent_log.json
+// ═══════════════════════════════════════════════
+let agentLogCache = null;
+let logFilter = 'all';
+
+async function loadAgentLog() {
+  const container = document.getElementById('agentlog-full-container');
+  try {
+    const res = await fetch('agent_log.json?_=' + Date.now());
+    if (!res.ok) throw new Error('not found');
+    const data = await res.json();
+    agentLogCache = data;
+    renderAgentLog(data);
+  } catch {
+    if (!agentLogCache) {
+      container.innerHTML = `<div class="log-empty"><div class="empty-icon">&#128203;</div>No agent log available yet.<br>Run the agent to generate logs.</div>`;
+    }
+  }
+}
+
+function renderAgentLog(data) {
+  const container = document.getElementById('agentlog-full-container');
+  const entries = Array.isArray(data) ? data : (data.entries || data.log || []);
+
+  if (!entries.length) {
+    container.innerHTML = `<div class="log-empty"><div class="empty-icon">&#128203;</div>Agent log is empty.</div>`;
+    return;
+  }
+
+  // Determine unique types
+  const types = [...new Set(entries.map(e => e.type || 'default'))];
+
+  // Filter bar
+  let filterHTML = '<div class="log-filter-bar">';
+  filterHTML += `<button class="log-filter-btn ${logFilter === 'all' ? 'active' : ''}" onclick="setLogFilter('all')">All</button>`;
+  types.forEach(t => {
+    filterHTML += `<button class="log-filter-btn ${logFilter === t ? 'active' : ''}" onclick="setLogFilter('${t}')">${esc(t)}</button>`;
+  });
+  filterHTML += '</div>';
+
+  // Entries
+  const filtered = logFilter === 'all' ? entries : entries.filter(e => (e.type || 'default') === logFilter);
+  let entriesHTML = '';
+  filtered.forEach(e => {
+    const type = e.type || 'default';
+    const typeClass = ['tool_call','tool_result','reasoning','decision','error','ingest'].includes(type) ? type : 'default';
+    const ts = e.timestamp || e.ts || '';
+    const msg = e.message || e.action || e.content || '';
+    const detail = e.detail || e.result || e.data || '';
+    const detailStr = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : String(detail);
+
+    entriesHTML += `
+      <div class="log-entry">
+        <span class="log-type-badge log-type-${typeClass}">${esc(type)}</span>
+        <div class="log-body">
+          ${ts ? `<div class="log-timestamp">${esc(ts.substring(0, 19))}</div>` : ''}
+          <div class="log-message">${esc(msg)}</div>
+          ${detailStr && detailStr !== '{}' && detailStr !== '' ? `<div class="log-detail">${esc(detailStr)}</div>` : ''}
+        </div>
+      </div>`;
+  });
+
+  container.innerHTML = filterHTML + entriesHTML;
+}
+
+function setLogFilter(f) {
+  logFilter = f;
+  if (agentLogCache) renderAgentLog(agentLogCache);
+}
+
+// ═══════════════════════════════════════════════
+// UTILITY
+// ═══════════════════════════════════════════════
+function esc(s) {
+  if (!s) return '';
+  const div = document.createElement('div');
+  div.textContent = String(s);
+  return div.innerHTML;
+}
+
+// ═══════════════════════════════════════════════
+// POLLING
+// ═══════════════════════════════════════════════
+async function fetchProgress() {
+  try {
+    const res = await fetch('progress.json?_=' + Date.now());
+    if (res.ok) renderLive(await res.json());
+  } catch (_) {}
+}
+
+fetchProgress();
+setInterval(fetchProgress, 2000);
+</script>
+</body>
+</html>

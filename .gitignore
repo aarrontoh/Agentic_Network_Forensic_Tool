@@ -1,0 +1,19 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+tmp/
+*.log
+34936-sensor-250304-00002389_redacted/
+Part2.zip
+
+network/
+.git.bak/
+.obsidian/
+output/
+
+# Agent generated output (ingest caches can be 260+ MB)
+Part2/Agent/data/output/

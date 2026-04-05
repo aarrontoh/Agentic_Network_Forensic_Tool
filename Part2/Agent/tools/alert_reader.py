@@ -1,0 +1,148 @@
+"""
+Phase 1 – Suricata EVE alert ingestion.
+
+Streams the sensor alert JSON file (Elastic-wrapped Suricata EVE format) and returns:
+  - Categorised alert lists (C2, trojan, exfil, lateral, ransomware, policy, scan, other)
+  - IOC sets: suspicious IPs (internal + external), community IDs
+  - Summary statistics for reporting
+
+The file can be hundreds of MB so we stream it line-by-line without loading into RAM.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Set
+
+from tools.common import is_internal_ip
+
+# Safety cap: collect at most this many alerts per category to avoid OOM
+_MAX_PER_CAT = 10_000
+
+
+def _classify(rule_name: str, rule_category: str) -> str:
+    """Return a coarse threat category string for a Suricata alert."""
+    n = rule_name.lower()
+    c = rule_category.lower()
+    if any(k in n for k in ("botnet", " c2 ", "command and control", "cnc", "cobalt", "empire", "beacon")):
+        return "c2"
+    if any(k in n for k in ("exfil", "data leak", "temp.sh", "upload", "transfer")):
+        return "exfiltration"
+    if any(k in n for k in ("ransomware", "lynx", "ransom", "encrypt")):
+        return "ransomware"
+    if any(k in n for k in ("lateral", "psexec", "wmi", "smb", "rdp", "pass the")):
+        return "lateral"
+    if "trojan" in c or "malware" in c:
+        return "trojan"
+    if "policy" in c:
+        return "policy"
+    if "scan" in n or "scan" in c or "sweep" in n:
+        return "scan"
+    return "other"
+
+
+def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
+    """
+    Parse the Suricata EVE alert JSON file and return a structured artifact dict.
+
+    Keys returned
+    -------------
+    total_alerts          int
+    external_ips          List[str]   – external IPs seen in alerts
+    internal_ips          List[str]   – internal IPs seen in alerts
+    all_ips               List[str]   – union of the above
+    community_ids         List[str]   – community IDs for Zeek cross-reference
+    categories            Dict[str,int] – per-category alert counts
+    top_rules             List[{"name":str,"count":int}]
+    alerts_by_category    Dict[str,List[dict]]
+    """
+    path = Path(alert_json_path)
+    if not path.exists():
+        return {
+            "error": f"Alert file not found: {alert_json_path}",
+            "total_alerts": 0,
+            "external_ips": [],
+            "internal_ips": [],
+            "all_ips": [],
+            "community_ids": [],
+            "categories": {},
+            "top_rules": [],
+            "alerts_by_category": {},
+        }
+
+    _cats = ["c2", "exfiltration", "ransomware", "lateral", "trojan", "policy", "scan", "other"]
+    buckets: Dict[str, List[dict]] = {c: [] for c in _cats}
+    external_ips: Set[str] = set()
+    internal_ips: Set[str] = set()
+    community_ids: Set[str] = set()
+    rule_counts: Dict[str, int] = {}
+    total = 0
+
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                rec = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+
+            total += 1
+
+            src_ip = rec.get("source", {}).get("ip", "")
+            dst_ip = rec.get("destination", {}).get("ip", "")
+            rule = rec.get("rule", {})
+            rule_name = rule.get("name", "")
+            rule_cat = rule.get("category", "")
+            cid = rec.get("network", {}).get("community_id", "")
+
+            if cid:
+                community_ids.add(cid)
+            for ip in (src_ip, dst_ip):
+                if not ip:
+                    continue
+                if is_internal_ip(ip, internal_networks):
+                    internal_ips.add(ip)
+                else:
+                    external_ips.add(ip)
+
+            rule_counts[rule_name] = rule_counts.get(rule_name, 0) + 1
+            cat = _classify(rule_name, rule_cat)
+
+            if len(buckets[cat]) < _MAX_PER_CAT:
+                buckets[cat].append({
+                    "ts": rec.get("@timestamp", ""),
+                    "src_ip": src_ip,
+                    "src_port": rec.get("source", {}).get("port", 0),
+                    "dst_ip": dst_ip,
+                    "dst_port": rec.get("destination", {}).get("port", 0),
+                    "protocol": rec.get("network", {}).get("protocol", ""),
+                    "direction": rec.get("network", {}).get("direction", ""),
+                    "community_id": cid,
+                    "rule_name": rule_name,
+                    "rule_id": rule.get("id", ""),
+                    "category": rule_cat,
+                    "severity": (
+                        rec.get("suricata", {})
+                        .get("eve", {})
+                        .get("alert", {})
+                        .get("severity", 0)
+                    ),
+                    # geo enrichment when available
+                    "src_country": rec.get("source", {}).get("geo", {}).get("country_name", ""),
+                    "dst_country": rec.get("destination", {}).get("geo", {}).get("country_name", ""),
+                })
+
+    top_rules = sorted(rule_counts.items(), key=lambda x: x[1], reverse=True)[:25]
+
+    return {
+        "total_alerts": total,
+        "external_ips": sorted(external_ips),
+        "internal_ips": sorted(internal_ips),
+        "all_ips": sorted(external_ips | internal_ips),
+        "community_ids": sorted(community_ids),
+        "categories": {c: len(buckets[c]) for c in _cats},
+        "top_rules": [{"name": n, "count": cnt} for n, cnt in top_rules],
+        "alerts_by_category": buckets,
+    }
