@@ -171,11 +171,16 @@ def run_ingest(
         _save_cache(ingest_dir, "alerts", alert_result)
 
     # Flatten alert data into artifacts
+    # "all_ips" is the *filtered* IOC set (infra IPs removed) for Zeek grep.
+    # "all_ips_unfiltered" is the full set for analysis tools that need every IP.
     artifacts.update({
         "alert_total":            alert_result.get("total_alerts", 0),
         "alert_ioc_external_ips": alert_result.get("external_ips", []),
         "alert_ioc_internal_ips": alert_result.get("internal_ips", []),
         "alert_ioc_all_ips":      alert_result.get("all_ips", []),
+        "alert_ioc_all_ips_unfiltered": alert_result.get("all_ips_unfiltered",
+                                                          alert_result.get("all_ips", [])),
+        "alert_infra_ips":        alert_result.get("infra_ips", []),
         "alert_community_ids":    alert_result.get("community_ids", []),
         "alert_categories":       alert_result.get("categories", {}),
         "alert_top_rules":        alert_result.get("top_rules", []),
@@ -184,6 +189,7 @@ def run_ingest(
         artifacts[f"alerts_{cat}"] = alert_list
 
     n_ioc = len(alert_result.get("all_ips", []))
+    n_infra = len(alert_result.get("infra_ips", []))
     n_alerts = alert_result.get("total_alerts", 0)
     alert_chips = [
         {"segment": f"{cat}: {cnt:,}", "status": "ok"}
@@ -192,7 +198,7 @@ def run_ingest(
     ]
     _write_progress(work_dir, "preprocessing", {
         "done": 1, "total": 4,
-        "current": f"Phase 1 done — {n_alerts:,} alerts, {n_ioc} IOC IPs",
+        "current": f"Phase 1 done — {n_alerts:,} alerts, {n_ioc} IOC IPs ({n_infra} infra excluded)",
         "phase": "alerts",
     }, extra={
         "alert_results": alert_chips,
@@ -210,7 +216,10 @@ def run_ingest(
         zeek_result = cached_zeek
     else:
         ioc_ips  = set(alert_result.get("all_ips", []))
-        ioc_cids = set(alert_result.get("community_ids", []))
+        # Community IDs disabled for grep — even high-priority CIDs produce
+        # thousands of patterns that match nearly every Zeek line.
+        # IP-based filtering alone is precise enough.
+        ioc_cids = set()
 
         if not zeek_json_path:
             zeek_result = {
@@ -232,8 +241,20 @@ def run_ingest(
         "zeek_scanned": zeek_result.get("scanned", 0),
         "zeek_matched": zeek_result.get("matched", 0),
     })
+    # Merge Zeek protocol aliases into canonical names:
+    #   "connection" → zeek_conn,  "smb_mapping"/"smb_files" → zeek_smb
+    _PROTO_ALIASES = {
+        "connection": "conn",
+        "smb_mapping": "smb",
+        "smb_files": "smb",
+    }
     for protocol, recs in zeek_result.get("records", {}).items():
-        artifacts[f"zeek_{protocol}"] = recs
+        canon = _PROTO_ALIASES.get(protocol, protocol)
+        key = f"zeek_{canon}"
+        if key in artifacts:
+            artifacts[key].extend(recs)
+        else:
+            artifacts[key] = recs
 
     zeek_chips = [
         {"segment": f"{proto}: {len(recs):,}", "status": "ok" if recs else "error"}
@@ -307,7 +328,8 @@ def run_ingest(
     if cached_pcap_analysis:
         pcap_analysis = cached_pcap_analysis
     else:
-        target_ips = set(alert_result.get("all_ips", []))
+        target_ips = set(alert_result.get("all_ips_unfiltered",
+                                         alert_result.get("all_ips", [])))
         tshark_chip_log: List[Dict[str, str]] = []
 
         if targeted_pcaps and target_ips:

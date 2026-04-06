@@ -11,6 +11,7 @@ The file can be hundreds of MB so we stream it line-by-line without loading into
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
@@ -19,22 +20,32 @@ from tools.common import is_internal_ip
 # Safety cap: collect at most this many alerts per category to avoid OOM
 _MAX_PER_CAT = 10_000
 
+# Internal IPs that appear in more than this fraction of alerts are likely
+# infrastructure (DNS servers, domain controllers) and should NOT be sent
+# to the Zeek grep filter — they match virtually every record and destroy
+# signal.  They are still kept in internal_ips for reference, just excluded
+# from the IOC set used for Zeek correlation.
+_INFRA_IP_ALERT_FRACTION = 0.10
+
 
 def _classify(rule_name: str, rule_category: str) -> str:
     """Return a coarse threat category string for a Suricata alert."""
     n = rule_name.lower()
     c = rule_category.lower()
+    # Early exit: known false-positive patterns that should NOT be ransomware
+    if "basic auth" in n or "password detected" in n:
+        return "policy"
     if any(k in n for k in ("botnet", " c2 ", "command and control", "cnc", "cobalt", "empire", "beacon")):
         return "c2"
     if any(k in n for k in ("exfil", "data leak", "temp.sh", "upload", "transfer")):
         return "exfiltration"
-    if any(k in n for k in ("ransomware", "lynx", "ransom", "encrypt")):
+    if any(k in n for k in ("ransomware", "lynx", "ransom", "encrypt", "file drop", "deployment")):
         return "ransomware"
-    if any(k in n for k in ("lateral", "psexec", "wmi", "smb", "rdp", "pass the")):
+    if any(k in n for k in ("lateral", "psexec", "wmi", "smb", "rdp", "pass the", "remote exec", "winrm")):
         return "lateral"
     if "trojan" in c or "malware" in c:
         return "trojan"
-    if "policy" in c:
+    if "policy" in c or "privacy" in c:
         return "policy"
     if "scan" in n or "scan" in c or "sweep" in n:
         return "scan"
@@ -71,11 +82,17 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
         }
 
     _cats = ["c2", "exfiltration", "ransomware", "lateral", "trojan", "policy", "scan", "other"]
+    # High-priority categories whose community IDs are worth sending to Zeek grep.
+    # Low-signal categories (trojan, policy, other) generate too many community IDs.
+    _HIGH_PRI_CATS = {"c2", "exfiltration", "ransomware", "lateral", "scan"}
+
     buckets: Dict[str, List[dict]] = {c: [] for c in _cats}
     external_ips: Set[str] = set()
     internal_ips: Set[str] = set()
-    community_ids: Set[str] = set()
+    community_ids: Set[str] = set()          # all community IDs (for reference)
+    highpri_community_ids: Set[str] = set()  # only from high-priority categories
     rule_counts: Dict[str, int] = {}
+    ip_alert_freq: Dict[str, int] = defaultdict(int)  # per-IP alert count
     total = 0
 
     with path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -102,6 +119,7 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
             for ip in (src_ip, dst_ip):
                 if not ip:
                     continue
+                ip_alert_freq[ip] += 1
                 if is_internal_ip(ip, internal_networks):
                     internal_ips.add(ip)
                 else:
@@ -109,6 +127,10 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
 
             rule_counts[rule_name] = rule_counts.get(rule_name, 0) + 1
             cat = _classify(rule_name, rule_cat)
+
+            # Only keep community IDs from high-priority categories for Zeek grep
+            if cid and cat in _HIGH_PRI_CATS:
+                highpri_community_ids.add(cid)
 
             if len(buckets[cat]) < _MAX_PER_CAT:
                 buckets[cat].append({
@@ -136,12 +158,27 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
 
     top_rules = sorted(rule_counts.items(), key=lambda x: x[1], reverse=True)[:25]
 
+    # ── Filter out infrastructure IPs that would flood the Zeek grep ─────────
+    # Internal IPs appearing in >10% of alerts are infrastructure (DNS, DC).
+    # External IPs are always kept — they're specific threat indicators.
+    infra_threshold = max(1, int(total * _INFRA_IP_ALERT_FRACTION))
+    infra_ips = {
+        ip for ip, cnt in ip_alert_freq.items()
+        if cnt >= infra_threshold and ip in internal_ips
+    }
+    # IOC IPs = all external + non-infrastructure internal
+    ioc_internal_ips = internal_ips - infra_ips
+    ioc_all_ips = external_ips | ioc_internal_ips
+
     return {
         "total_alerts": total,
         "external_ips": sorted(external_ips),
         "internal_ips": sorted(internal_ips),
-        "all_ips": sorted(external_ips | internal_ips),
-        "community_ids": sorted(community_ids),
+        "all_ips": sorted(ioc_all_ips),           # filtered for Zeek grep
+        "all_ips_unfiltered": sorted(external_ips | internal_ips),  # full set for analysis tools
+        "infra_ips": sorted(infra_ips),            # excluded from grep (for reporting)
+        "community_ids": sorted(highpri_community_ids),  # only high-priority for Zeek grep
+        "community_ids_all": sorted(community_ids),      # full set for reference
         "categories": {c: len(buckets[c]) for c in _cats},
         "top_rules": [{"name": n, "count": cnt} for n, cnt in top_rules],
         "alerts_by_category": buckets,

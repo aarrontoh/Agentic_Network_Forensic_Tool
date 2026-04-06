@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 MAX_PER_PROTOCOL = 60_000
-_KNOWN_PROTOCOLS = ("conn", "dns", "ssl", "http", "dce_rpc", "weird", "files", "x509")
+_KNOWN_PROTOCOLS = ("conn", "connection", "dns", "ssl", "http", "dce_rpc", "rdp", "smb", "smb_mapping", "smb_files", "weird", "files", "x509", "kerberos", "dhcp", "notice")
 
 _EMPTY_RECORDS = lambda: {p: [] for p in list(_KNOWN_PROTOCOLS) + ["other"]}  # noqa: E731
 

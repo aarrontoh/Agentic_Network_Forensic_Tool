@@ -167,7 +167,7 @@ def _parse_capinfos_ts(ts_str: str) -> Optional[datetime]:
 def select_pcaps(
     pcap_index: List[Dict[str, Any]],
     alert_timestamps: List[str],
-    max_pcaps: int = 30,
+    max_pcaps: int = 200,
 ) -> List[str]:
     """
     Given the index and a list of ISO-8601 alert timestamps, return the paths

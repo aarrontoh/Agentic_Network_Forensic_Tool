@@ -1,4 +1,4 @@
-# No third-party packages are required for deterministic mode.
-# Optional dependency for LLM-backed tool selection:
-# openai>=1.0.0
-# google-genai>=1.0.0
+# Core: no third-party packages required for deterministic mode.
+# For multi-agent mode (--reasoner multi-agent):
+google-genai>=1.0.0
+openai>=1.0.0

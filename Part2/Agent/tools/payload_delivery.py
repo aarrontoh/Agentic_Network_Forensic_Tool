@@ -213,11 +213,17 @@ def analyze_payload_delivery(artifacts: Dict[str, Any], config: AgentConfig) -> 
     else:
         confidence = "LOW"
 
-    # Identify the deployment host name
-    deployment_host = (
-        max(combined_fanout, key=lambda s: len(combined_fanout[s][0]))
-        if combined_fanout else "unknown"
-    )
+    # Identify the deployment host — check combined_fanout first, fallback to PCAP RDP
+    if combined_fanout:
+        deployment_host = max(combined_fanout, key=lambda s: len(combined_fanout[s][0]))
+    elif internal_rdp_pairs:
+        # Use the PCAP-derived top RDP source as deployment host
+        _rdp_src_counts: Dict[str, Set[str]] = defaultdict(set)
+        for sess in internal_rdp_pairs:
+            _rdp_src_counts[sess.get("src_ip", "")].add(sess.get("dst_ip", ""))
+        deployment_host = max(_rdp_src_counts, key=lambda s: len(_rdp_src_counts[s]))
+    else:
+        deployment_host = "unknown"
     summary = (
         f"Host {deployment_host} exhibits the strongest late-stage internal fan-out pattern "
         f"consistent with ransomware deployment. "

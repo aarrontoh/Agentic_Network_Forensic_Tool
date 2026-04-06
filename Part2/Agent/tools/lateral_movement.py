@@ -27,6 +27,23 @@ _ENUM_KEYWORDS = (
     "enum", "query", "lookup",
 )
 
+# High-value DCERPC operations that are strong lateral-movement indicators
+_HIGH_VALUE_OPS = {
+    "SamrCreateUser2InDomain", "SamrAddMemberToGroup", "SamrAddMemberToAlias",
+    "SamrEnumerateUsersInDomain", "SamrEnumerateAliasesInDomain",
+    "SamrLookupNamesInDomain", "SamrQueryInformationUser",
+    "DRSGetNCChanges", "DRSBind",               # DCSync
+    "NetrShareEnum", "NetrShareGetInfo",         # Share enumeration
+    "NetrLogonSamLogonEx", "NetrLogonSamLogon",  # NTLM relay
+}
+
+# Suspicious filenames in SMB sessions that indicate recon or deployment
+_SUSPICIOUS_SMB_FILES = (
+    "delete.me", ".7z", ".zip", ".rar",
+    "how to back files", "readme", "ransom",
+    "kkwlo", "hfs.exe", "psexec", "mimikatz", "cobalt",
+)
+
 
 def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> Finding:
     networks = config.cached_networks
@@ -48,7 +65,6 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
         sample = enum_hits[0]
         dce_op = sample.get("zeek_detail", {}).get("dce_rpc", {}).get("operation", "")
         dce_ep = sample.get("zeek_detail", {}).get("dce_rpc", {}).get("endpoint", "")
-        # Find unique sources performing enumeration
         enum_sources: Set[str] = {r.get("src_ip", "") for r in enum_hits}
         evidence.append(EvidenceItem(
             ts=sample.get("ts", ""),
@@ -63,6 +79,42 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
             ),
             artifact="zeek_dce_rpc",
         ))
+
+    # ── 1b. High-value DCERPC operation breakdown ─────────────────────────────
+    highval_ops: Dict[str, int] = defaultdict(int)
+    highval_targets: Dict[str, Set[str]] = defaultdict(set)  # op → unique targets
+    for rec in dce_records:
+        dce = rec.get("zeek_detail", {}).get("dce_rpc", {})
+        op = dce.get("operation", "")
+        if op in _HIGH_VALUE_OPS:
+            highval_ops[op] += 1
+            highval_targets[op].add(rec.get("dst_ip", ""))
+
+    if highval_ops:
+        op_summary = ", ".join(
+            f"{op}({cnt}, {len(highval_targets[op])} targets)"
+            for op, cnt in sorted(highval_ops.items(), key=lambda x: -x[1])[:5]
+        )
+        # Find the most targeted operation for sample evidence
+        top_op = max(highval_ops, key=highval_ops.get)
+        top_op_sample = next(
+            (r for r in dce_records
+             if r.get("zeek_detail", {}).get("dce_rpc", {}).get("operation") == top_op),
+            None,
+        )
+        if top_op_sample:
+            evidence.append(EvidenceItem(
+                ts=top_op_sample.get("ts", ""),
+                src_ip=top_op_sample.get("src_ip", ""),
+                dst_ip=top_op_sample.get("dst_ip", ""),
+                protocol="dce_rpc",
+                description=(
+                    f"High-value DCERPC operations detected: {op_summary}. "
+                    "SAMR operations indicate account enumeration/creation, "
+                    "DRSUAPI indicates DCSync, NetrShareEnum indicates share discovery."
+                ),
+                artifact="zeek_dce_rpc",
+            ))
 
     # ── 2. Lateral / scan alerts ───────────────────────────────────────────────
     lateral_alerts = artifacts.get("alerts_lateral", [])
@@ -88,6 +140,33 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
             ),
             artifact="alerts_lateral/scan",
         ))
+
+    # ── 2b. Zeek SMB records for internal-to-internal SMB activity ──────────
+    zeek_smb = artifacts.get("zeek_smb", [])
+    if zeek_smb:
+        smb_int_pairs: Set[Tuple[str, str]] = set()
+        for rec in zeek_smb:
+            src = rec.get("src_ip", "")
+            dst = rec.get("dst_ip", "")
+            if is_internal_ip(src, networks) and is_internal_ip(dst, networks):
+                smb_int_pairs.add((src, dst))
+        if smb_int_pairs:
+            smb_sources = {p[0] for p in smb_int_pairs}
+            smb_targets = {p[1] for p in smb_int_pairs}
+            sample_rec = zeek_smb[0]
+            evidence.append(EvidenceItem(
+                ts=sample_rec.get("ts", ""),
+                src_ip=sample_rec.get("src_ip", ""),
+                dst_ip=sample_rec.get("dst_ip", ""),
+                protocol="smb",
+                description=(
+                    f"Zeek SMB logs show {len(zeek_smb)} records with "
+                    f"{len(smb_int_pairs)} unique internal-to-internal pairs "
+                    f"({len(smb_sources)} sources → {len(smb_targets)} targets). "
+                    "This corroborates lateral SMB file access or share enumeration."
+                ),
+                artifact="zeek_smb",
+            ))
 
     # ── 3. SMB/RPC fan-out from Zeek conn records ─────────────────────────────
     conn_records = artifacts.get("zeek_conn", [])
@@ -150,7 +229,6 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
     # ── 4. SMB session details from deep PCAP analysis ────────────────────────
     smb_sessions = artifacts.get("pcap_smb_sessions", [])
     if smb_sessions:
-        # Count unique src→dst pairs
         smb_pairs: Set[Tuple[str, str]] = {
             (s.get("src_ip", ""), s.get("dst_ip", "")) for s in smb_sessions
         }
@@ -168,6 +246,35 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
                 f"Source PCAP: {sample_smb.get('source_pcap', '')}."
             ),
             artifact=f"pcap/{sample_smb.get('source_pcap', '')}",
+        ))
+
+    # ── 4b. Suspicious SMB filenames (recon / deployment indicators) ──────────
+    suspicious_smb: List[dict] = []
+    for sess in smb_sessions:
+        fname = (sess.get("filename", "") or "").lower()
+        if not fname:
+            continue
+        for indicator in _SUSPICIOUS_SMB_FILES:
+            if indicator in fname:
+                suspicious_smb.append({**sess, "_indicator": indicator})
+                break
+
+    if suspicious_smb:
+        unique_files = sorted({s.get("filename", "") for s in suspicious_smb if s.get("filename")})[:10]
+        unique_targets = {s.get("dst_ip", "") for s in suspicious_smb}
+        sample_sus = suspicious_smb[0]
+        evidence.append(EvidenceItem(
+            ts=sample_sus.get("ts", ""),
+            src_ip=sample_sus.get("src_ip", ""),
+            dst_ip=sample_sus.get("dst_ip", ""),
+            protocol="smb",
+            description=(
+                f"Suspicious SMB filenames detected across {len(unique_targets)} targets: "
+                f"{unique_files}. "
+                "These may indicate pre-deployment testing (delete.me), "
+                "data staging (.7z/.zip), or ransomware artifacts."
+            ),
+            artifact=f"pcap/{sample_sus.get('source_pcap', '')}",
         ))
 
     limitations.append(
@@ -190,9 +297,11 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
     # Determine confidence
     has_dcerpc = any("dce_rpc" in e.artifact for e in evidence)
     has_fanout = any("multiple_internal_hosts" in e.dst_ip for e in evidence)
-    if has_dcerpc and has_fanout:
+    has_highval_ops = bool(highval_ops)
+    has_suspicious_files = bool(suspicious_smb)
+    if (has_dcerpc and has_fanout) or (has_highval_ops and has_fanout):
         confidence = "HIGH"
-    elif has_dcerpc or has_fanout:
+    elif has_dcerpc or has_fanout or has_highval_ops:
         confidence = "MEDIUM"
     else:
         confidence = "LOW"

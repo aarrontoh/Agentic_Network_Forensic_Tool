@@ -10,6 +10,7 @@ Evidence chain:
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any, Dict, List, Set
 
 from case_brief import INVESTIGATION_DIRECTIVES
@@ -132,9 +133,11 @@ def analyze_exfiltration(artifacts: Dict[str, Any], config: AgentConfig) -> Find
         ))
         exfil_confidence_boost = True
 
-    # ── 4. Zeek conn – large outbound transfers ───────────────────────────────
+    # ── 4. Zeek conn – large outbound transfers + per-destination aggregation ──
     conn_records = artifacts.get("zeek_conn", [])
     large_outbound: List[dict] = []
+    # Aggregate bytes per external destination to detect multi-session exfil
+    dst_byte_totals: Dict[str, Dict[str, Any]] = {}  # ext_ip → {bytes, sessions, sources}
     for rec in conn_records:
         src = rec.get("src_ip", "")
         dst = rec.get("dst_ip", "")
@@ -142,12 +145,18 @@ def analyze_exfiltration(artifacts: Dict[str, Any], config: AgentConfig) -> Find
             continue
         if is_internal_ip(dst, networks):
             continue
-        # orig_bytes in Zeek conn
         zeek_conn = rec.get("zeek_detail", {}).get("conn", {})
         try:
             orig_bytes = int(zeek_conn.get("orig_bytes", 0) or 0)
         except (TypeError, ValueError):
             orig_bytes = 0
+        # Track per-destination totals
+        if dst not in dst_byte_totals:
+            dst_byte_totals[dst] = {"bytes": 0, "sessions": 0, "sources": set(), "sample": rec}
+        dst_byte_totals[dst]["bytes"] += orig_bytes
+        dst_byte_totals[dst]["sessions"] += 1
+        dst_byte_totals[dst]["sources"].add(src)
+
         if orig_bytes >= config.exfil_large_bytes_threshold:
             large_outbound.append({**rec, "_bytes": orig_bytes})
 
@@ -165,6 +174,53 @@ def analyze_exfiltration(artifacts: Dict[str, Any], config: AgentConfig) -> Find
             ),
             artifact="zeek_conn",
         ))
+
+    # Report top external destinations by aggregate bytes (catches multi-session exfil)
+    top_dsts = sorted(dst_byte_totals.items(), key=lambda x: x[1]["bytes"], reverse=True)[:5]
+    for ext_ip, info in top_dsts:
+        if info["bytes"] >= config.exfil_large_bytes_threshold:
+            sample = info["sample"]
+            evidence.append(EvidenceItem(
+                ts=sample.get("ts", ""),
+                src_ip=", ".join(sorted(info["sources"])[:3]),
+                dst_ip=ext_ip,
+                protocol=f"tcp/{sample.get('dst_port', '')}",
+                description=(
+                    f"Aggregate outbound to {ext_ip}: {info['bytes']:,} bytes across "
+                    f"{info['sessions']} session(s) from {len(info['sources'])} internal source(s). "
+                    "Multi-session exfiltration to a single destination is consistent with staged data theft."
+                ),
+                artifact="zeek_conn",
+            ))
+            exfil_confidence_boost = True
+
+    # ── 4b. SMB staging – archive files being collected before exfil ─────────
+    smb_sessions = artifacts.get("pcap_smb_sessions", [])
+    archive_exts = (".7z", ".zip", ".rar", ".tar", ".gz")
+    staging_files: List[dict] = []
+    for sess in smb_sessions:
+        fname = (sess.get("filename", "") or "").lower()
+        if any(fname.endswith(ext) for ext in archive_exts):
+            staging_files.append(sess)
+
+    if staging_files:
+        unique_files = sorted({s.get("filename", "") for s in staging_files if s.get("filename")})[:5]
+        staging_sources = {s.get("src_ip", "") for s in staging_files}
+        sample_stg = staging_files[0]
+        evidence.append(EvidenceItem(
+            ts=sample_stg.get("ts", ""),
+            src_ip=sample_stg.get("src_ip", ""),
+            dst_ip=sample_stg.get("dst_ip", ""),
+            protocol="smb",
+            description=(
+                f"SMB archive file activity detected: {unique_files}. "
+                f"{len(staging_files)} SMB frame(s) involving archive files from "
+                f"{len(staging_sources)} source(s). "
+                "Archive staging via SMB is consistent with data collection prior to exfiltration."
+            ),
+            artifact=f"pcap/{sample_stg.get('source_pcap', '')}",
+        ))
+        exfil_confidence_boost = True
 
     # ── 5. Deep PCAP – HTTP requests to exfil domains ────────────────────────
     pcap_http = artifacts.get("pcap_http_requests", [])

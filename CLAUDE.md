@@ -22,11 +22,17 @@ OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4o \
   --network-dir /path/to/network \
   --case apex_global --reasoner openai
 
-# With Gemini reasoning
+# With Gemini reasoning (planner mode)
 GEMINI_API_KEY=... GEMINI_MODEL=gemini-2.5-flash \
   python3 agent.py run \
   --network-dir /path/to/network \
   --case apex_global --reasoner gemini
+
+# Multi-agent mode (full Gemini-powered investigation with SQL tool-calling)
+# Requires GEMINI_API_KEY in .env or environment
+python3 agent.py run \
+  --network-dir /path/to/network \
+  --case apex_global --reasoner multi-agent
 
 # Force re-ingest (skip cache)
 python3 agent.py run --network-dir /path/to/network --case apex_global --force-refresh
@@ -54,7 +60,50 @@ The `--network-dir` folder must contain:
 - `zeek` is **no longer required** – Zeek analysis is sourced from the pre-existing Zeek JSON
 - No third-party Python packages required for deterministic mode; `openai` and `google-genai` are optional
 
-## Architecture – Alert-First Pipeline
+## Architecture – Two Analysis Modes
+
+### Mode 1: Deterministic / LLM Planner (--reasoner deterministic|openai|gemini)
+Uses hardcoded Python analysis tools or an LLM planner to sequence them.
+
+### Mode 2: Multi-Agent (--reasoner multi-agent)
+Full Gemini-powered multi-agent system with SQL-grounded tool calling.
+
+```
+Phase 1-4  Existing ingest pipeline (alerts → Zeek → PCAP targeting → tshark)
+              ↓
+Phase 5    Load artifacts into SQLite forensic database (13 tables)
+              ↓
+Phase 6    Manager dispatches 4 Worker Agents (A, B, C, D)
+           Each worker:
+             ├─ Gets system prompt + case brief + DB schema
+             ├─ Calls tools: query_db(SQL), count_rows, get_table_info
+             ├─ Runs autonomous investigation loop (up to 15 iterations)
+             └─ Submits structured Finding via submit_finding tool
+              ↓
+Phase 7    Timeline assembly
+              ↓
+Phase 8    Reporting Synthesizer (Gemini) → C-suite Markdown report
+```
+
+### Multi-Agent Files
+
+| File | Role |
+|---|---|
+| `db/schema.py` | SQLite schema (13 evidence tables + indexes) |
+| `db/ingest_db.py` | Load ingest artifacts into database |
+| `agents/tool_registry.py` | SQL query tools + Gemini function declarations |
+| `agents/worker.py` | Worker agent with Gemini function-calling loop |
+| `agents/worker_prompts.py` | Specialized system prompts for each question |
+| `agents/manager.py` | Orchestrator: dispatches workers, accumulates findings |
+| `agents/synthesizer.py` | Gemini-powered report writer |
+
+### Guardrails
+- **Read-only SQL**: Agents can only execute SELECT queries — writes are blocked
+- **No hallucination**: Every finding must cite tool query results
+- **Bounded iterations**: Workers get max 15 tool-calling rounds
+- **Structured output**: Findings submitted via `submit_finding` tool with required fields
+
+## Architecture – Alert-First Pipeline (Shared by Both Modes)
 
 The agent now follows a **four-phase ingest + reasoning loop** pattern:
 

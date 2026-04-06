@@ -14,6 +14,7 @@ Extracted artefacts
 """
 from __future__ import annotations
 
+import ipaddress
 import subprocess
 import shutil
 from pathlib import Path
@@ -29,12 +30,15 @@ _MAX = {
     "rdp": 1_000,
 }
 
+# Max IPs to put in a tshark display filter (keep it reasonable)
+_MAX_FILTER_IPS = 50
+
 
 def analyze_targeted_pcaps(
     pcap_paths: List[str],
     target_ips: Set[str],
     work_dir: str,
-    max_pcaps: int = 25,
+    max_pcaps: int = 200,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ) -> Dict[str, Any]:
     """
@@ -60,8 +64,19 @@ def analyze_targeted_pcaps(
     # Safety: limit PCAP count
     to_analyze = [p for p in pcap_paths if Path(p).exists()][:max_pcaps]
 
-    # Build display-filter IP clause (limit to 20 IPs to keep filter short)
-    ip_clause = _build_ip_clause(sorted(target_ips)[:20])
+    # Build display-filter IP clause — prioritize external IPs (exfil targets,
+    # C2 servers) then add internal IPs up to the limit.
+    _rfc1918 = [ipaddress.ip_network(c, strict=False)
+                for c in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+    external = sorted(ip for ip in target_ips
+                      if not any(ipaddress.ip_address(ip) in net for net in _rfc1918))
+    internal = sorted(ip for ip in target_ips if ip not in set(external))
+    priority_ips = external[:_MAX_FILTER_IPS] + internal[:max(0, _MAX_FILTER_IPS - len(external))]
+    ip_clause = _build_ip_clause(priority_ips)
+
+    # For TLS and HTTP, use a broader or no-IP filter since these are low-volume
+    # protocols and the exfil destination may not be in our IOC list.
+    ip_clause_broad = _build_ip_clause(priority_ips) if len(priority_ips) > 0 else "ip"
 
     results: Dict[str, Any] = {
         "pcaps_analyzed": to_analyze,
@@ -81,9 +96,11 @@ def analyze_targeted_pcaps(
         if len(results["dns_queries"]) < _MAX["dns"]:
             _extract_dns(tshark_bin, pcap, pcap_name, ip_clause, results)
         if len(results["http_requests"]) < _MAX["http"]:
-            _extract_http(tshark_bin, pcap, pcap_name, ip_clause, results)
+            # Use broad filter — HTTP is low-volume, don't miss exfil requests
+            _extract_http(tshark_bin, pcap, pcap_name, "ip", results)
         if len(results["tls_sessions"]) < _MAX["tls"]:
-            _extract_tls(tshark_bin, pcap, pcap_name, ip_clause, results)
+            # Use broad filter — TLS SNI is critical for exfil detection
+            _extract_tls(tshark_bin, pcap, pcap_name, "ip", results)
         if len(results["smb_sessions"]) < _MAX["smb"]:
             _extract_smb(tshark_bin, pcap, pcap_name, ip_clause, results)
         if len(results["rdp_sessions"]) < _MAX["rdp"]:
@@ -244,15 +261,26 @@ def _extract_smb(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
 
 def _extract_rdp(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: dict) -> None:
     flt = f"tcp.port == 3389 && ({ip_clause})"
-    fields = ["frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport"]
+    fields = [
+        "frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport",
+        "rdp.cookie",          # RDP cookie reveals attempted username
+        "rdp.neg_length",
+    ]
     seen: Set[tuple] = set()
     for row in _tshark(tshark, pcap, flt, fields):
         if len(out["rdp_sessions"]) >= _MAX["rdp"]:
             break
         src = _g(row, 1)
         dst = _g(row, 2)
+        cookie = _g(row, 5)
         key = (src, dst)
         if key in seen:
+            # Update cookie if we find one for an existing pair
+            if cookie:
+                for sess in out["rdp_sessions"]:
+                    if sess["src_ip"] == src and sess["dst_ip"] == dst and not sess.get("cookie"):
+                        sess["cookie"] = cookie
+                        break
             continue
         seen.add(key)
         out["rdp_sessions"].append({
@@ -261,5 +289,6 @@ def _extract_rdp(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
             "dst_ip": dst,
             "src_port": _g(row, 3),
             "dst_port": _g(row, 4),
+            "cookie": cookie,
             "source_pcap": pcap_name,
         })

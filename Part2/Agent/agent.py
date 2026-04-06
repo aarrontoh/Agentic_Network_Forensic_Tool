@@ -18,6 +18,21 @@ from tools.payload_delivery import analyze_payload_delivery
 from tools.reporting import write_outputs
 from tools.timeline import build_timeline
 
+# Load .env file if present (for GEMINI_API_KEY etc.)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed — fall back to manual .env loading
+    _env_path = Path(__file__).parent / ".env"
+    if _env_path.exists():
+        import os
+        for line in _env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip())
+
 
 ACTION_MAP = {
     "initial_access": analyze_initial_access,
@@ -89,6 +104,7 @@ def _clean_work_dir(work_dir: Path, wipe_ingest_cache: bool = False) -> None:
         "timeline.json",
         "ingest_summary.json",
         "preprocessing_summary.json",
+        "forensic_evidence.db",
     ]
     for name in _STALE_FILES:
         p = work_dir / name
@@ -168,7 +184,22 @@ def run_case(args: argparse.Namespace) -> None:
     })
     _write_progress(str(work_dir), "analyzing", state, started_at)
 
-    # ── Analysis loop ─────────────────────────────────────────────────────────
+    # ── Analysis: choose between deterministic/LLM planner or multi-agent ────
+    if args.reasoner == "multi-agent":
+        _run_multi_agent_analysis(state, artifacts, str(work_dir), started_at)
+    else:
+        _run_planner_analysis(state, artifacts, config, args, str(work_dir), started_at)
+
+
+def _run_planner_analysis(
+    state: AnalysisState,
+    artifacts: Dict[str, Any],
+    config: AgentConfig,
+    args: argparse.Namespace,
+    work_dir: str,
+    started_at: str,
+) -> None:
+    """Original deterministic / LLM-planner analysis loop."""
     reasoner = build_reasoner(args.reasoner, config.openai_model, config.gemini_model)
 
     for _ in range(config.max_agent_steps):
@@ -184,7 +215,7 @@ def run_case(args: argparse.Namespace) -> None:
         finding = ACTION_MAP[decision.next_action](state.artifacts, config)
         state.add_finding(decision.next_action, finding)
         state.log("finding_recorded", {"question_id": finding.question_id, "summary": finding.summary})
-        _write_progress(str(work_dir), "analyzing", state, started_at)
+        _write_progress(work_dir, "analyzing", state, started_at)
 
     # ── Timeline + reporting ──────────────────────────────────────────────────
     timeline_payload = build_timeline(state)
@@ -193,11 +224,75 @@ def run_case(args: argparse.Namespace) -> None:
         "timeline_path": timeline_payload["path"],
         "event_count": len(timeline_payload["events"]),
     })
-    _write_progress(str(work_dir), "reporting", state, started_at, timeline_events=timeline_payload["events"])
+    _write_progress(work_dir, "reporting", state, started_at, timeline_events=timeline_payload["events"])
 
     write_outputs(state)
-    _write_progress(str(work_dir), "complete", state, started_at, timeline_events=timeline_payload["events"])
+    _write_progress(work_dir, "complete", state, started_at, timeline_events=timeline_payload["events"])
     print(json.dumps({"status": "ok", "output_dir": state.work_dir}, indent=2))
+
+
+def _run_multi_agent_analysis(
+    state: AnalysisState,
+    artifacts: Dict[str, Any],
+    work_dir: str,
+    started_at: str,
+) -> None:
+    """Multi-agent investigation: DB ingestion → Worker agents → Synthesizer."""
+    from db.schema import init_db, get_table_stats
+    from db.ingest_db import load_all
+    from agents.manager import run_multi_agent
+    from agents.synthesizer import synthesize_report
+
+    # ── Phase 5: Load evidence into SQLite database ──────────────────────────
+    db_path = str(Path(work_dir) / "forensic_evidence.db")
+    state.log("db_init", {"db_path": db_path})
+    _write_progress(work_dir, "loading_database", state, started_at)
+
+    conn = init_db(db_path)
+    counts = load_all(conn, artifacts)
+    state.log("db_loaded", counts)
+
+    db_stats = get_table_stats(conn)
+    _write_progress(work_dir, "multi_agent", state, started_at)
+
+    # ── Phase 6: Run multi-agent investigation ───────────────────────────────
+    def _agent_progress(stage, detail, worker_id, status):
+        _write_progress(work_dir, stage, state, started_at)
+
+    findings = run_multi_agent(conn, state, progress_callback=_agent_progress)
+
+    # Map agent findings into state
+    for qid, finding in findings.items():
+        state.findings[qid] = finding
+    _write_progress(work_dir, "synthesizing", state, started_at)
+
+    # ── Phase 7: Timeline ────────────────────────────────────────────────────
+    timeline_payload = build_timeline(state)
+    state.completed_actions.append("timeline")
+    state.log("timeline_built", {
+        "timeline_path": timeline_payload["path"],
+        "event_count": len(timeline_payload["events"]),
+    })
+
+    # ── Phase 8: Synthesize report ───────────────────────────────────────────
+    state.log("synthesizer_started", {})
+    report_md = synthesize_report(findings, db_stats)
+    report_path = Path(work_dir) / "report.md"
+    report_path.write_text(report_md, encoding="utf-8")
+    state.log("synthesizer_completed", {"report_path": str(report_path)})
+
+    # Also write standard outputs (findings.json, agent_log.json)
+    write_outputs(state)
+    _write_progress(work_dir, "complete", state, started_at, timeline_events=timeline_payload["events"])
+
+    conn.close()
+    print(json.dumps({
+        "status": "ok",
+        "mode": "multi-agent",
+        "output_dir": state.work_dir,
+        "db_path": db_path,
+        "db_stats": db_stats,
+    }, indent=2))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -252,9 +347,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--reasoner",
-        choices=["deterministic", "openai", "gemini"],
+        choices=["deterministic", "openai", "gemini", "multi-agent"],
         default="deterministic",
-        help="Autonomous decision engine to use.",
+        help=(
+            "Analysis engine: 'deterministic' (no LLM), 'openai'/'gemini' (LLM planner), "
+            "or 'multi-agent' (full Gemini-powered multi-agent with SQL tool-calling)."
+        ),
     )
     run_parser.add_argument(
         "--force-refresh",

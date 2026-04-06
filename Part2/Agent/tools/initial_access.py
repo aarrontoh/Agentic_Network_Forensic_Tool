@@ -42,13 +42,13 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
             if ip and is_internal_ip(ip, networks):
                 internal_alert_map[ip].append(alert)
 
-    # ── 2. Find external→internal remote-access sessions in Zeek SSL/conn ─────
+    # ── 2. Find external→internal remote-access sessions in Zeek SSL/conn/rdp ──
     # Look for connections where an external IP connects TO an internal host on
     # a known remote-access port (RDP 3389, VPN 443/8443/1194, IPsec 500/4500).
     remote_access_ports = set(str(p) for p in config.remote_access_ports)
-    # Zeek SSL has external→internal RDP with geo info
-    ssl_records = artifacts.get("zeek_ssl", [])
 
+    # Check Zeek SSL records
+    ssl_records = artifacts.get("zeek_ssl", [])
     candidates: List[Dict[str, Any]] = []
     for rec in ssl_records:
         src_ip = rec.get("src_ip", "")
@@ -56,7 +56,6 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
         dst_port = str(rec.get("dst_port", ""))
         if not src_ip or not dst_ip:
             continue
-        # External source, internal destination, on a remote-access port
         if is_internal_ip(src_ip, networks):
             continue
         if not is_internal_ip(dst_ip, networks):
@@ -65,7 +64,63 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
             continue
         candidates.append(rec)
 
-    # Also check PCAP-derived RDP sessions
+    # Check Zeek conn records for external→internal on remote-access ports
+    # This captures sessions that don't appear in SSL (plain RDP, etc.)
+    # and provides byte/duration metrics for session quality scoring.
+    conn_records = artifacts.get("zeek_conn", [])
+    ext_conn_quality: Dict[str, Dict[str, Any]] = {}  # (src,dst) → quality metrics
+    for rec in conn_records:
+        src_ip = rec.get("src_ip", "")
+        dst_ip = rec.get("dst_ip", "")
+        dst_port = str(rec.get("dst_port", ""))
+        if not src_ip or not dst_ip:
+            continue
+        if is_internal_ip(src_ip, networks):
+            continue
+        if not is_internal_ip(dst_ip, networks):
+            continue
+        if dst_port not in remote_access_ports:
+            continue
+        # Track session quality: bytes transferred + duration
+        zeek_conn = rec.get("zeek_detail", {}).get("conn", {})
+        try:
+            orig_bytes = int(zeek_conn.get("orig_bytes", 0) or 0)
+        except (TypeError, ValueError):
+            orig_bytes = 0
+        try:
+            resp_bytes = int(zeek_conn.get("resp_bytes", 0) or 0)
+        except (TypeError, ValueError):
+            resp_bytes = 0
+        try:
+            duration = float(zeek_conn.get("duration", 0) or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        pair_key = f"{src_ip}->{dst_ip}"
+        existing = ext_conn_quality.get(pair_key, {"bytes": 0, "duration": 0.0, "count": 0})
+        ext_conn_quality[pair_key] = {
+            "bytes": existing["bytes"] + orig_bytes + resp_bytes,
+            "duration": max(existing["duration"], duration),
+            "count": existing["count"] + 1,
+            "src_ip": src_ip, "dst_ip": dst_ip, "dst_port": dst_port,
+            "rec": rec,
+        }
+        # Also add as a candidate if not already from SSL
+        if not any(c.get("src_ip") == src_ip and c.get("dst_ip") == dst_ip for c in candidates):
+            candidates.append(rec)
+
+    # Check Zeek RDP records for cookie/username information
+    rdp_zeek_records = artifacts.get("zeek_rdp", [])
+    rdp_cookies: Dict[str, List[str]] = defaultdict(list)  # dst_ip → [cookies]
+    for rec in rdp_zeek_records:
+        src_ip = rec.get("src_ip", "")
+        dst_ip = rec.get("dst_ip", "")
+        if is_internal_ip(src_ip, networks):
+            continue
+        cookie = rec.get("zeek_detail", {}).get("rdp", {}).get("cookie", "")
+        if cookie:
+            rdp_cookies[dst_ip].append(cookie)
+
+    # Also check PCAP-derived RDP sessions (includes cookie field now)
     rdp_sessions = artifacts.get("pcap_rdp_sessions", [])
     for sess in rdp_sessions:
         src_ip = sess.get("src_ip", "")
@@ -76,15 +131,19 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
             continue
         if not is_internal_ip(dst_ip, networks):
             continue
-        candidates.append({
-            "ts": sess.get("ts", ""),
-            "src_ip": src_ip,
-            "dst_ip": dst_ip,
-            "dst_port": sess.get("dst_port", "3389"),
-            "src_geo": {},
-            "dst_geo": {},
-            "_source": "pcap_rdp",
-        })
+        cookie = sess.get("cookie", "")
+        if cookie:
+            rdp_cookies[dst_ip].append(cookie)
+        if not any(c.get("src_ip") == src_ip and c.get("dst_ip") == dst_ip for c in candidates):
+            candidates.append({
+                "ts": sess.get("ts", ""),
+                "src_ip": src_ip,
+                "dst_ip": dst_ip,
+                "dst_port": sess.get("dst_port", "3389"),
+                "src_geo": {},
+                "dst_geo": {},
+                "_source": "pcap_rdp",
+            })
 
     if not candidates and not internal_alert_map:
         return Finding(
@@ -105,10 +164,7 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
             tool_name="initial_access",
         )
 
-    # ── 3. Score candidates by post-access internal activity ──────────────────
-    # The destination of the external access who later contacts the most internal
-    # hosts is the strongest patient-zero candidate.
-    conn_records = artifacts.get("zeek_conn", [])
+    # ── 3. Score candidates by session quality + post-access activity ──────────
     # Build: internal IP → set of unique internal IPs it contacted
     internal_fanout: Dict[str, Set[str]] = defaultdict(set)
     for rec in conn_records:
@@ -117,13 +173,31 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
         if is_internal_ip(src, networks) and is_internal_ip(dst, networks):
             internal_fanout[src].add(dst)
 
-    # Score each remote-access candidate
+    # Score each candidate using multiple signals:
+    #   - alert_score: threat alerts from this host
+    #   - fanout_score: internal hosts contacted post-access
+    #   - quality_score: session bytes + duration (distinguishes operator from scanner)
     scored: List[tuple] = []
     for rec in candidates:
+        src_ip = rec.get("src_ip", "")
         dst_ip = rec.get("dst_ip", "")
         alert_score = len(internal_alert_map.get(dst_ip, []))
         fanout_score = len(internal_fanout.get(dst_ip, set()))
-        scored.append((alert_score + fanout_score * 2, rec))
+
+        # Session quality from Zeek conn
+        pair_key = f"{src_ip}->{dst_ip}"
+        quality = ext_conn_quality.get(pair_key, {"bytes": 0, "duration": 0.0, "count": 0})
+        # Normalize: >100KB bytes = meaningful session, >5s duration = interactive
+        bytes_score = min(quality["bytes"] / 100_000, 10)   # cap at 10
+        duration_score = min(quality["duration"] / 5.0, 10)  # cap at 10
+        session_count = quality["count"]
+
+        total_score = (alert_score * 3
+                       + fanout_score * 2
+                       + bytes_score * 2
+                       + duration_score * 2
+                       + min(session_count, 5))
+        scored.append((total_score, rec, quality))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
@@ -167,7 +241,7 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
             tool_name="initial_access",
         )
 
-    _, best = scored[0]
+    _, best, best_quality = scored[0]
     src_ip = best.get("src_ip", "")
     dst_ip = best.get("dst_ip", "")
     dst_port = str(best.get("dst_port", ""))
@@ -176,6 +250,9 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
     src_asn_org = best.get("src_as", {}).get("organization", {}).get("name", "")
     fanout_count = len(internal_fanout.get(dst_ip, set()))
     alert_count = len(internal_alert_map.get(dst_ip, []))
+    session_bytes = best_quality.get("bytes", 0)
+    session_duration = best_quality.get("duration", 0.0)
+    session_count = best_quality.get("count", 0)
 
     geo_note = ""
     if src_country:
@@ -183,6 +260,14 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
         if src_asn_org:
             geo_note += f", ASN org: {src_asn_org}"
         geo_note += ")"
+
+    # Build a rich description including session quality metrics
+    quality_note = ""
+    if session_bytes > 0 or session_duration > 0:
+        quality_note = (
+            f" Session metrics: {session_bytes:,} bytes transferred, "
+            f"{session_duration:.1f}s max duration, {session_count} connection(s)."
+        )
 
     evidence.append(EvidenceItem(
         ts=ts,
@@ -193,10 +278,27 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
             f"External host {src_ip}{geo_note} connected to internal host {dst_ip} "
             f"on port {dst_port} (remote-access service). "
             f"Post-access: {dst_ip} communicated with {fanout_count} unique internal hosts "
-            f"and generated {alert_count} threat alerts."
+            f"and generated {alert_count} threat alerts.{quality_note}"
         ),
-        artifact="zeek_ssl / alert_data",
+        artifact="zeek_ssl / zeek_conn / alert_data",
     ))
+
+    # Add RDP cookie evidence if available (reveals attempted usernames)
+    dst_cookies = rdp_cookies.get(dst_ip, [])
+    if dst_cookies:
+        unique_cookies = sorted(set(dst_cookies))[:10]
+        evidence.append(EvidenceItem(
+            ts=ts,
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            protocol="rdp",
+            description=(
+                f"RDP cookie values observed targeting {dst_ip}: {unique_cookies}. "
+                "These reveal attempted usernames during the RDP handshake, "
+                "consistent with credential spraying or targeted login attempts."
+            ),
+            artifact="zeek_rdp / pcap_rdp",
+        ))
 
     # Also add an alert-corroboration evidence item if available
     if alert_count > 0 and internal_alert_map.get(dst_ip):
@@ -225,13 +327,24 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
     if not src_country:
         limitations.append("Geo information was not available for the source IP.")
 
-    confidence = "HIGH" if (fanout_count >= 5 and alert_count >= 1) else "MEDIUM" if (fanout_count >= 2 or alert_count >= 1) else "LOW"
+    # Session quality: large byte count + interactive duration = strong indicator
+    has_quality_session = session_bytes >= 100_000 and session_duration >= 5.0
+    confidence = (
+        "HIGH" if ((fanout_count >= 5 and alert_count >= 1) or (has_quality_session and alert_count >= 1))
+        else "MEDIUM" if (fanout_count >= 2 or alert_count >= 1 or has_quality_session)
+        else "LOW"
+    )
     summary = (
         f"The strongest patient-zero candidate is internal host {dst_ip}, which received an inbound "
         f"remote-access connection from {src_ip}{geo_note} on port {dst_port}. "
         f"The host subsequently contacted {fanout_count} unique internal hosts and generated "
         f"{alert_count} threat-intelligence alerts, consistent with post-compromise activity."
     )
+    if has_quality_session:
+        summary += (
+            f" Session analysis shows {session_bytes:,} bytes and {session_duration:.1f}s duration, "
+            "indicating an interactive operator session rather than a brief scan."
+        )
 
     return Finding(
         question_id="A",
