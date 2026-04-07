@@ -17,6 +17,7 @@ import json
 import os
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -46,18 +47,26 @@ def run_multi_agent(
 
     Returns a dict mapping question_id to Finding.
     """
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     db_context = _build_manager_context(conn)
     findings: Dict[str, Finding] = {}
 
-    # Investigation order: A → B → C → D
-    question_order = ["A", "B", "C", "D"]
+    # ── Parallel execution strategy ──────────────────────────────────────────
+    # Workers A (Initial Access) and B (Lateral Movement) are independent —
+    # run them in parallel. C (Exfiltration) benefits from A+B context.
+    # D (Payload Deployment) benefits from all prior findings.
+    #
+    # Batch 1: A + B in parallel
+    # Batch 2: C (with A+B context)
+    # Batch 3: D (with A+B+C context)
+    parallel_batches = [
+        ["A", "B"],   # independent — run in parallel
+        ["C"],        # depends on A + B
+        ["D"],        # depends on A + B + C
+    ]
 
-    for i, qid in enumerate(question_order):
+    def _build_prompt(qid: str) -> str:
+        """Build worker prompt with accumulated prior findings context."""
         worker_config = WORKER_PROMPTS[qid]
-        directive = INVESTIGATION_DIRECTIVES[qid]
-
-        # Build worker prompt with accumulated context from prior findings
         prior_context = ""
         if findings:
             prior_summaries = []
@@ -71,61 +80,98 @@ def run_multi_agent(
                 + "\n".join(prior_summaries)
                 + "\n\nUse these to inform your investigation (e.g., correlate IPs across stages)."
             )
-
-        full_prompt = (
+        return (
             worker_config["prompt"]
             + f"\n\n{db_context}"
             + prior_context
-            + f"\n\nBegin your investigation now. Start by examining the database to understand the available evidence."
+            + "\n\nBegin your investigation now. Start by examining the database to understand the available evidence."
         )
+
+    def _run_one_worker(qid: str) -> tuple:
+        """Run a single worker and return (qid, finding)."""
+        worker_config = WORKER_PROMPTS[qid]
+        full_prompt = _build_prompt(qid)
+
+        state.log("worker_dispatched", {"question_id": qid, "title": worker_config["title"]})
 
         if progress_callback:
             progress_callback(
                 stage="multi_agent",
-                detail=f"Worker {qid}: {worker_config['title']} ({i+1}/{len(question_order)})",
+                detail=f"Worker {qid}: {worker_config['title']}",
                 worker_id=qid,
                 status="running",
             )
 
-        state.log("worker_dispatched", {
-            "question_id": qid,
-            "title": worker_config["title"],
-        })
-
-        # Run the worker agent
         finding = run_worker(
             conn=conn,
             question_id=qid,
             title=worker_config["title"],
             mitre=worker_config["mitre"],
             system_prompt=full_prompt,
-            model=model,
             log_callback=lambda event, data: state.log(event, data),
         )
+        return qid, finding
 
-        findings[qid] = finding
-        state.add_finding(f"agent_{worker_config['title'].lower().replace(' ', '_')}", finding)
+    total_dispatched = 0
+    total_workers = sum(len(b) for b in parallel_batches)
 
-        # Cooldown between workers to avoid rate-limit bursts on free tier
-        if i < len(question_order) - 1:
-            cooldown = int(os.getenv("WORKER_COOLDOWN_SECONDS", "15"))
+    for batch_idx, batch in enumerate(parallel_batches):
+        if len(batch) > 1:
+            # Parallel batch
+            print(f"  [Manager] Batch {batch_idx + 1}: Running workers {', '.join(batch)} in parallel...")
+            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                futures = {pool.submit(_run_one_worker, qid): qid for qid in batch}
+                for future in as_completed(futures):
+                    qid, finding = future.result()
+                    findings[qid] = finding
+                    worker_config = WORKER_PROMPTS[qid]
+                    state.add_finding(f"agent_{worker_config['title'].lower().replace(' ', '_')}", finding)
+                    total_dispatched += 1
+
+                    state.log("worker_completed", {
+                        "question_id": qid,
+                        "confidence": finding.confidence,
+                        "evidence_count": len(finding.evidence),
+                        "summary": finding.summary[:200],
+                    })
+
+                    if progress_callback:
+                        progress_callback(
+                            stage="multi_agent",
+                            detail=f"Worker {qid}: {worker_config['title']} — {finding.confidence} ({total_dispatched}/{total_workers})",
+                            worker_id=qid,
+                            status="completed",
+                        )
+        else:
+            # Sequential single worker
+            qid = batch[0]
+            print(f"  [Manager] Batch {batch_idx + 1}: Running worker {qid}...")
+            qid, finding = _run_one_worker(qid)
+            findings[qid] = finding
+            worker_config = WORKER_PROMPTS[qid]
+            state.add_finding(f"agent_{worker_config['title'].lower().replace(' ', '_')}", finding)
+            total_dispatched += 1
+
+            state.log("worker_completed", {
+                "question_id": qid,
+                "confidence": finding.confidence,
+                "evidence_count": len(finding.evidence),
+                "summary": finding.summary[:200],
+            })
+
+            if progress_callback:
+                progress_callback(
+                    stage="multi_agent",
+                    detail=f"Worker {qid}: {worker_config['title']} — {finding.confidence} ({total_dispatched}/{total_workers})",
+                    worker_id=qid,
+                    status="completed",
+                )
+
+        # Cooldown between batches (not between parallel workers in same batch)
+        if batch_idx < len(parallel_batches) - 1:
+            cooldown = int(os.getenv("WORKER_COOLDOWN_SECONDS", "5"))
             if cooldown > 0:
-                print(f"  [Manager] Cooldown {cooldown}s before next worker...")
+                print(f"  [Manager] Cooldown {cooldown}s before next batch...")
                 time.sleep(cooldown)
-
-        state.log("worker_completed", {
-            "question_id": qid,
-            "confidence": finding.confidence,
-            "evidence_count": len(finding.evidence),
-            "summary": finding.summary[:200],
-        })
-
-        if progress_callback:
-            progress_callback(
-                stage="multi_agent",
-                detail=f"Worker {qid}: {worker_config['title']} — {finding.confidence}",
-                worker_id=qid,
-                status="completed",
-            )
 
     return findings

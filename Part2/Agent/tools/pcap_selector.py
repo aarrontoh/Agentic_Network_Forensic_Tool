@@ -18,11 +18,14 @@ The cache is invalidated if the set of .pcap filenames changes.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Set
 
 _CACHE_FILENAME = "pcap_index_cache.json"
@@ -107,17 +110,17 @@ def build_pcap_index(
         except Exception:
             pass   # corrupt cache → rebuild
 
-    # ── Build index from scratch ──────────────────────────────────────────────
+    # ── Build index from scratch (parallelized) ────────────────────────────────
     capinfos_bin = shutil.which("capinfos")
     index: List[Dict[str, Any]] = []
+    num_workers = int(os.getenv("PCAP_THREADS", "6"))
+    progress_lock = Lock()
+    completed = [0]
 
-    for idx, pcap in enumerate(pcap_files):
-        if progress_cb:
-            progress_cb(idx, len(pcap_files), pcap.name)
+    def _index_one_pcap(pcap: Path) -> Dict[str, Any]:
         if capinfos_bin:
             entry = _run_capinfos(capinfos_bin, pcap)
         else:
-            # No capinfos – use filename date only
             entry = {"path": str(pcap), "name": pcap.name, "size_bytes": pcap.stat().st_size, "date": ""}
             m = re.search(r"-(\d{6})-", pcap.name)
             if m:
@@ -125,7 +128,24 @@ def build_pcap_index(
                     entry["date"] = datetime.strptime("20" + m.group(1), "%Y%m%d").strftime("%Y-%m-%d")
                 except ValueError:
                     pass
-        index.append(entry)
+        with progress_lock:
+            completed[0] += 1
+            if progress_cb:
+                progress_cb(completed[0], len(pcap_files), pcap.name)
+        return entry
+
+    if num_workers > 1 and len(pcap_files) > 1:
+        with ThreadPoolExecutor(max_workers=min(num_workers, len(pcap_files))) as pool:
+            futures = {pool.submit(_index_one_pcap, pcap): pcap for pcap in pcap_files}
+            for future in as_completed(futures):
+                try:
+                    index.append(future.result())
+                except Exception:
+                    pass
+    else:
+        for pcap in pcap_files:
+            index.append(_index_one_pcap(pcap))
+
     if progress_cb:
         progress_cb(len(pcap_files), len(pcap_files), "done")
 

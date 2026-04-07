@@ -81,44 +81,61 @@ def synthesize_report(
         db_stats=json.dumps(db_stats, indent=2),
     )
 
-    backend = os.getenv("LLM_BACKEND", "gemini").strip().lower()
+    # Build fallback order: gemini models first → groq → together → sambanova
+    backends_to_try = []
 
-    try:
-        if backend == "deepseek":
-            # DeepSeek / OpenAI-compatible backend
-            api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-            if not api_key:
-                raise RuntimeError("No DeepSeek API key")
-            base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-            ds_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            response = client.chat.completions.create(
-                model=ds_model,
-                messages=[
-                    {"role": "system", "content": "You are a senior forensic report writer."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
-            return response.choices[0].message.content or _template_report(findings, db_stats)
-        else:
-            # Gemini backend
-            api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
-            if not api_key:
-                raise RuntimeError("No API key")
-            from google import genai
-            from google.genai import types
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.3),
-            )
-            return response.text or _template_report(findings, db_stats)
-    except Exception as e:
-        # Fallback to template-based report
-        return _template_report(findings, db_stats)
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    if gemini_key:
+        models_str = os.getenv("GEMINI_MODELS", "gemini-2.5-flash")
+        for m in models_str.split(","):
+            m = m.strip()
+            if m:
+                backends_to_try.append(("gemini", m, gemini_key, None))
+
+    _OPENAI_BACKENDS = [
+        ("groq", "GROQ_API_KEY", "GROQ_MODEL", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1"),
+        ("together", "TOGETHER_API_KEY", "TOGETHER_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct", os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1")),
+        ("sambanova", "SAMBANOVA_API_KEY", "SAMBANOVA_MODEL", "Llama-4-Maverick-17B-128E-Instruct", "https://api.sambanova.ai/v1"),
+    ]
+    for name, key_env, model_env, default_model, base_url in _OPENAI_BACKENDS:
+        api_key = os.getenv(key_env, "").strip()
+        if api_key:
+            backends_to_try.append((name, os.getenv(model_env, default_model), api_key, base_url))
+
+    for backend, llm_model, api_key, base_url in backends_to_try:
+        try:
+            if backend == "gemini":
+                from google import genai
+                from google.genai import types
+                client = genai.Client(api_key=api_key)
+                response = client.models.generate_content(
+                    model=llm_model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(temperature=0.3),
+                )
+                result = response.text
+            else:
+                from openai import OpenAI
+                client = OpenAI(api_key=api_key, base_url=base_url)
+                response = client.chat.completions.create(
+                    model=llm_model,
+                    messages=[
+                        {"role": "system", "content": "You are a senior forensic report writer."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                )
+                result = response.choices[0].message.content
+
+            if result:
+                print(f"  [Synthesizer] Report generated using {backend}/{llm_model}")
+                return result
+        except Exception as e:
+            print(f"  [Synthesizer] {backend}/{llm_model} failed: {str(e)[:100]}, trying next...")
+            continue
+
+    print("  [Synthesizer] All backends failed, using template report")
+    return _template_report(findings, db_stats)
 
 
 def _template_report(findings: Dict[str, Finding], db_stats: dict) -> str:

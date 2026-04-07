@@ -15,10 +15,16 @@ Extracted artefacts
 from __future__ import annotations
 
 import ipaddress
+import os
 import subprocess
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Set
+
+# Number of parallel tshark workers — tune based on CPU cores and I/O
+_NUM_WORKERS = int(os.getenv("PCAP_THREADS", "8"))
 
 
 # Max records to collect per artefact type (across all PCAPs)
@@ -88,23 +94,56 @@ def analyze_targeted_pcaps(
         "errors": [],
     }
 
-    for idx, pcap in enumerate(to_analyze):
-        pcap_name = Path(pcap).name
-        if progress_cb:
-            progress_cb(idx, len(to_analyze), pcap_name)
+    # Thread-safe lock for appending to shared results lists
+    results_lock = Lock()
+    completed_count = [0]  # mutable counter for progress
 
-        if len(results["dns_queries"]) < _MAX["dns"]:
-            _extract_dns(tshark_bin, pcap, pcap_name, ip_clause, results)
-        if len(results["http_requests"]) < _MAX["http"]:
-            # Use broad filter — HTTP is low-volume, don't miss exfil requests
-            _extract_http(tshark_bin, pcap, pcap_name, "ip", results)
-        if len(results["tls_sessions"]) < _MAX["tls"]:
-            # Use broad filter — TLS SNI is critical for exfil detection
-            _extract_tls(tshark_bin, pcap, pcap_name, "ip", results)
-        if len(results["smb_sessions"]) < _MAX["smb"]:
-            _extract_smb(tshark_bin, pcap, pcap_name, ip_clause, results)
-        if len(results["rdp_sessions"]) < _MAX["rdp"]:
-            _extract_rdp(tshark_bin, pcap, pcap_name, ip_clause, results)
+    def _process_one_pcap(pcap: str) -> None:
+        """Process a single PCAP through all 5 extractors (runs in thread)."""
+        pcap_name = Path(pcap).name
+        # Each thread collects its own local results, then merges under lock
+        local: Dict[str, list] = {
+            "dns_queries": [], "http_requests": [], "tls_sessions": [],
+            "smb_sessions": [], "rdp_sessions": [], "errors": [],
+        }
+
+        _extract_dns(tshark_bin, pcap, pcap_name, ip_clause, local)
+        _extract_http(tshark_bin, pcap, pcap_name, "ip", local)
+        _extract_tls(tshark_bin, pcap, pcap_name, "ip", local)
+        _extract_smb(tshark_bin, pcap, pcap_name, ip_clause, local)
+        _extract_rdp(tshark_bin, pcap, pcap_name, ip_clause, local)
+
+        _KEY_TO_MAX = {
+            "dns_queries": "dns", "http_requests": "http", "tls_sessions": "tls",
+            "smb_sessions": "smb", "rdp_sessions": "rdp",
+        }
+        with results_lock:
+            for key in local:
+                if key == "errors":
+                    results[key].extend(local[key])
+                    continue
+                cap = _MAX.get(_KEY_TO_MAX.get(key, ""), 99999)
+                remaining = cap - len(results[key])
+                if remaining > 0:
+                    results[key].extend(local[key][:remaining])
+            completed_count[0] += 1
+            if progress_cb:
+                progress_cb(completed_count[0], len(to_analyze), pcap_name)
+
+    # Run PCAPs in parallel threads — tshark is I/O bound so threads work well
+    num_workers = min(_NUM_WORKERS, len(to_analyze))
+    if num_workers > 1:
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            futures = {pool.submit(_process_one_pcap, pcap): pcap for pcap in to_analyze}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    with results_lock:
+                        results["errors"].append(f"{Path(futures[future]).name}: {exc}")
+    else:
+        for pcap in to_analyze:
+            _process_one_pcap(pcap)
 
     if progress_cb:
         progress_cb(len(to_analyze), len(to_analyze), "done")

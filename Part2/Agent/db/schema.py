@@ -243,8 +243,12 @@ CREATE INDEX IF NOT EXISTS idx_pcap_rdp_src     ON pcap_rdp(src_ip);
 
 
 def init_db(db_path: str) -> sqlite3.Connection:
-    """Create (or open) the forensic database and ensure all tables exist."""
-    conn = sqlite3.connect(db_path)
+    """Create (or open) the forensic database and ensure all tables exist.
+
+    check_same_thread=False allows the connection to be shared across worker
+    threads in the multi-agent manager (all queries are read-only SELECTs).
+    """
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA_SQL)
     conn.execute("PRAGMA journal_mode=WAL")

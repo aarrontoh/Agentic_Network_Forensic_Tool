@@ -73,6 +73,8 @@ def _write_progress(
                 "status": f.status,
                 "summary": f.summary,
                 "evidence_count": len(f.evidence),
+                "model": getattr(f, "tool_name", ""),
+                "limitations": getattr(f, "limitations", []) or [],
             }
             for qid, f in state.findings.items()
         },
@@ -229,6 +231,176 @@ def _run_planner_analysis(
     write_outputs(state)
     _write_progress(work_dir, "complete", state, started_at, timeline_events=timeline_payload["events"])
     print(json.dumps({"status": "ok", "output_dir": state.work_dir}, indent=2))
+
+
+def _test_llm_connection() -> None:
+    """Pre-flight test: verify at least one LLM backend works before ingest.
+
+    Tests ALL configured backends with a realistic function-calling round trip
+    (~4 KB tool response). Reports which passed/failed so the resilient fallback
+    has at least one working backend before we spend hours on ingest.
+    """
+    import os
+
+    _FAKE_DB_RESULT = {
+        "columns": ["src_ip", "dst_ip", "dst_port", "protocol", "count"],
+        "rows": [
+            ["10.128.239.57", "10.128.239.29", 49668, "dce_rpc", 72670],
+            ["10.128.239.57", "10.128.239.23", 49668, "dce_rpc", 3977],
+            ["10.128.239.57", "10.128.239.34", 3389, "rdp", 1245],
+            ["10.128.239.57", "10.128.239.35", 3389, "rdp", 892],
+            ["10.128.239.57", "10.128.239.36", 445, "smb", 567],
+            ["10.128.239.57", "10.128.239.37", 445, "smb", 2341],
+            ["10.128.239.57", "51.91.79.17", 443, "tls", 11],
+            ["194.0.234.17", "10.128.239.57", 3389, "rdp", 48],
+            ["96.126.120.149", "10.128.239.57", 3389, "rdp", 12],
+            ["206.189.231.47", "10.128.239.57", 3389, "rdp", 3],
+        ] * 3,
+        "row_count": 30,
+        "truncated": False,
+    }
+
+    _TEST_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "query_db",
+            "description": "Execute a read-only SQL SELECT query against the forensic evidence database.",
+            "parameters": {
+                "type": "object",
+                "properties": {"sql": {"type": "string", "description": "SQL SELECT query."}},
+                "required": ["sql"],
+            },
+        },
+    }
+
+    # Discover all configured backends
+    backends_to_test = []
+    primary = os.getenv("LLM_BACKEND", "gemini").strip().lower()
+    for name in [primary] + [b for b in ["groq", "deepseek", "gemini"] if b != primary]:
+        if name == "groq" and os.getenv("GROQ_API_KEY", "").strip():
+            backends_to_test.append(("groq", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                                     os.getenv("GROQ_API_KEY", "").strip(), "https://api.groq.com/openai/v1"))
+        elif name == "deepseek" and os.getenv("DEEPSEEK_API_KEY", "").strip():
+            backends_to_test.append(("deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                                     os.getenv("DEEPSEEK_API_KEY", "").strip(),
+                                     os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")))
+        elif name == "gemini" and (os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()):
+            backends_to_test.append(("gemini", os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+                                     os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip(),
+                                     None))
+
+    if not backends_to_test:
+        raise RuntimeError("No LLM API keys configured in .env! Set at least one of: GROQ_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY")
+
+    print(f"  [Pre-flight] Testing {len(backends_to_test)} configured backend(s): {', '.join(b[0] for b in backends_to_test)}")
+    print(f"  [Pre-flight] Primary backend: {primary}")
+
+    passed = []
+    failed = []
+
+    for backend_name, model, api_key, base_url in backends_to_test:
+        print(f"\n  [{backend_name.upper()}] Testing {model}...")
+        try:
+            if backend_name in ("groq", "deepseek"):
+                from openai import OpenAI
+                client = OpenAI(api_key=api_key, base_url=base_url)
+
+                # Step 1: function calling
+                print(f"  [{backend_name.upper()}] Step 1/2: Function calling...")
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are a forensic analyst. Use the query_db tool to investigate."},
+                        {"role": "user", "content": "Query the database to count all alerts."},
+                    ],
+                    tools=[_TEST_TOOL], tool_choice="auto", temperature=0.1,
+                )
+                msg = resp.choices[0].message
+                if not msg.tool_calls:
+                    raise RuntimeError("No function call returned")
+                tc = msg.tool_calls[0]
+                print(f"  [{backend_name.upper()}]   Called: {tc.function.name}({tc.function.arguments[:60]})")
+
+                # Step 2: large tool response
+                print(f"  [{backend_name.upper()}] Step 2/2: Large tool response (~4 KB)...")
+                # Strip unsupported fields (e.g. 'annotations') that some providers reject
+                assistant_msg = {k: v for k, v in msg.model_dump().items() if k in ("role", "content", "tool_calls")}
+                resp2 = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "Summarize the query results briefly."},
+                        {"role": "user", "content": "Query the database to count all alerts."},
+                        assistant_msg,
+                        {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(_FAKE_DB_RESULT)},
+                    ],
+                    tools=[_TEST_TOOL], temperature=0.1, max_tokens=100,
+                )
+                reply = resp2.choices[0].message.content or "(ok)"
+                print(f"  [{backend_name.upper()}]   Response: {reply[:80]}...")
+
+            else:  # gemini
+                from google import genai
+                from google.genai import types
+                client = genai.Client(api_key=api_key)
+                gemini_tool_decl = {
+                    "name": "query_db", "description": "Execute a read-only SQL SELECT query.",
+                    "parameters": {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]},
+                }
+
+                print(f"  [{backend_name.upper()}] Step 1/2: Function calling...")
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=[{"role": "user", "parts": [types.Part.from_text(text="Query the database to count all alerts.")]}],
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(function_declarations=[gemini_tool_decl])],
+                        system_instruction="You are a forensic analyst. Use the query_db tool.",
+                        temperature=0.1,
+                    ),
+                )
+                parts = resp.candidates[0].content.parts if resp.candidates and resp.candidates[0].content else []
+                fc_found = any(getattr(p, "function_call", None) for p in parts)
+                if not fc_found:
+                    raise RuntimeError("No function call returned")
+                print(f"  [{backend_name.upper()}]   Function call OK")
+
+                print(f"  [{backend_name.upper()}] Step 2/2: Large tool response (~4 KB)...")
+                fc_part = next(p for p in parts if getattr(p, "function_call", None))
+                resp2 = client.models.generate_content(
+                    model=model,
+                    contents=[
+                        {"role": "user", "parts": [types.Part.from_text(text="Query the database to count all alerts.")]},
+                        {"role": "model", "parts": [fc_part]},
+                        {"role": "user", "parts": [types.Part.from_function_response(name="query_db", response=_FAKE_DB_RESULT)]},
+                    ],
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(function_declarations=[gemini_tool_decl])],
+                        system_instruction="Summarize briefly.", temperature=0.1, max_output_tokens=100,
+                    ),
+                )
+                reply = resp2.text or "(ok)"
+                print(f"  [{backend_name.upper()}]   Response: {reply[:80]}...")
+
+            passed.append(f"{backend_name}/{model}")
+            print(f"  [{backend_name.upper()}] PASSED")
+
+        except Exception as e:
+            err = str(e)[:120]
+            failed.append(f"{backend_name}/{model}: {err}")
+            print(f"  [{backend_name.upper()}] FAILED — {err}")
+
+    # Summary
+    print(f"\n  [Pre-flight] Results: {len(passed)} passed, {len(failed)} failed")
+    for p in passed:
+        print(f"    PASS: {p}")
+    for f in failed:
+        print(f"    FAIL: {f}")
+
+    if not passed:
+        raise RuntimeError(
+            f"ALL backends failed pre-flight test! Cannot proceed.\n"
+            + "\n".join(f"  - {f}" for f in failed)
+        )
+    print(f"  [Pre-flight] At least one backend ready — investigation can proceed with fallback.\n")
 
 
 def _run_multi_agent_analysis(

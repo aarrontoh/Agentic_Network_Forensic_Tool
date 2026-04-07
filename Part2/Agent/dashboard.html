@@ -211,6 +211,10 @@
     .finding-title { font-size: 14px; font-weight: 600; color: var(--primary-cyan); margin-bottom: 8px; }
     .finding-summary { font-size: 13px; color: #b0c0d0; line-height: 1.6; margin-bottom: 12px; }
     .finding-evidence { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 6px; display: inline-block; }
+    .finding-model { font-size: 11px; color: var(--primary-cyan); font-family: var(--font-mono); background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.2); padding: 3px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+    .finding-model.error { color: #ff6b6b; background: rgba(255,107,107,0.08); border-color: rgba(255,107,107,0.2); }
+    .finding-failures { font-size: 11px; color: #ff6b6b; font-family: var(--font-mono); background: rgba(255,50,50,0.06); border: 1px solid rgba(255,50,50,0.15); padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; line-height: 1.5; }
+    .finding-failures .fail-label { color: #ff9f43; font-weight: 600; }
     .finding-pending { font-size: 13px; color: var(--text-muted); font-style: italic; opacity: 0.7; }
 
     .seg-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -816,6 +820,17 @@ function renderLive(d) {
     const qid = qids[tool];
     const f = findings[qid];
     if (f) {
+      // Extract model/backend info from tool_name field
+      const modelInfo = f.model || '';
+      const modelMatch = modelInfo.match(/\[(.+?)\/(.+?)\]/);
+      const backendName = modelMatch ? modelMatch[1].toUpperCase() : '';
+      const modelName = modelMatch ? modelMatch[2] : '';
+      const isError = f.status === 'agent_error';
+
+      // Check for failed backend attempts in limitations
+      const failedBackends = (f.limitations || []).filter(l => l.startsWith('Backends tried'));
+      const otherLimitations = (f.limitations || []).filter(l => !l.startsWith('Backends tried'));
+
       grid.innerHTML += `
         <div class="finding-card ${f.confidence === 'HIGH' ? 'done' : ''}">
           <div class="finding-header">
@@ -823,6 +838,8 @@ function renderLive(d) {
             <span class="badge badge-${f.confidence}">CONFIDENCE: ${f.confidence}</span>
           </div>
           <div class="finding-title">${esc(f.title)}</div>
+          ${modelInfo ? `<div class="finding-model ${isError ? 'error' : ''}">${isError ? 'FAILED' : 'MODEL'}: ${backendName ? backendName + ' / ' + modelName : esc(modelInfo)}</div>` : ''}
+          ${failedBackends.length ? `<div class="finding-failures"><span class="fail-label">FALLBACK LOG:</span> ${esc(failedBackends[0].replace('Backends tried before success: ', ''))}</div>` : ''}
           <div class="finding-summary">${esc(f.summary)}</div>
           <div class="finding-evidence">EVIDENCE FOUND: ${f.evidence_count} &bull; ${esc(f.status)}</div>
         </div>`;

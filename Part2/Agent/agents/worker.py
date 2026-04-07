@@ -94,8 +94,8 @@ _SUBMIT_FINDING_DECL = {
 
 
 def _get_backend() -> str:
-    """Return the active LLM backend: 'gemini' or 'deepseek'."""
-    return os.getenv("LLM_BACKEND", "gemini").strip().lower()
+    """Return the active LLM backend."""
+    return os.getenv("LLM_BACKEND", "groq").strip().lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,7 +299,8 @@ def _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, 
         msg = choice.message
 
         # Add assistant message to history
-        messages.append(msg.model_dump())
+        # Strip unsupported fields (e.g. 'annotations') that some providers reject
+        messages.append({k: v for k, v in msg.model_dump().items() if k in ("role", "content", "tool_calls")})
 
         # Check for tool calls
         if not msg.tool_calls:
@@ -350,8 +351,352 @@ def _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Groq backend (OpenAI-compatible, free 30 RPM)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_groq_client():
+    """Create an OpenAI-compatible client for Groq."""
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is required for Groq backend. Get one free at https://console.groq.com")
+    try:
+        from openai import OpenAI
+        return OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    except ImportError:
+        raise RuntimeError("openai package is required for Groq backend. Run: pip install openai")
+
+
+def _run_groq_worker(conn, question_id, title, mitre, system_prompt, model, log_callback):
+    """Groq function-calling loop (OpenAI-compatible)."""
+    model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    client = _get_groq_client()
+    tools = _build_openai_tools()
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Begin your investigation. Start by calling summarize_db to see what data is available, then use query_db to investigate."},
+    ]
+    finding_result = None
+
+    for iteration in range(1, _MAX_ITERATIONS + 1):
+        response = None
+        backoff = _INITIAL_BACKOFF
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+                break
+            except Exception as api_err:
+                err_str = str(api_err).lower()
+                is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
+                if is_rate_limit and attempt < _MAX_RETRIES:
+                    if log_callback:
+                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
+                    print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
+                    time.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    continue
+                raise
+
+        if response is None:
+            raise RuntimeError("All retries exhausted due to rate limiting")
+
+        choice = response.choices[0]
+        msg = choice.message
+        # Strip unsupported fields (e.g. 'annotations') that some providers reject
+        messages.append({k: v for k, v in msg.model_dump().items() if k in ("role", "content", "tool_calls")})
+
+        if not msg.tool_calls:
+            if choice.finish_reason == "stop":
+                messages.append({"role": "user", "content": "Continue your investigation. Use the tools to gather evidence, then call submit_finding when ready."})
+            continue
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            if log_callback:
+                log_callback("tool_call", {"question_id": question_id, "iteration": iteration, "tool": tool_name, "args": _truncate_args(tool_args)})
+
+            if tool_name == "submit_finding":
+                finding_result = tool_args
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"status": "accepted"})})
+                break
+            else:
+                result = dispatch_tool(conn, tool_name, tool_args)
+                result_str = json.dumps(result, default=str)
+                if len(result_str) > 8000:
+                    if isinstance(result.get("rows"), list) and len(result["rows"]) > 30:
+                        result["rows"] = result["rows"][:30]
+                        result["truncated"] = True
+                        result["note"] = "Showing first 30 rows. Use LIMIT in SQL for precise control."
+                    result_str = json.dumps(result, default=str)
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+
+        if finding_result:
+            break
+
+    return finding_result, iteration
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Together AI backend (OpenAI-compatible)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_together_client():
+    """Create an OpenAI-compatible client for Together AI."""
+    api_key = os.getenv("TOGETHER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("TOGETHER_API_KEY is required for Together AI backend.")
+    base_url = os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1")
+    from openai import OpenAI
+    return OpenAI(api_key=api_key, base_url=base_url)
+
+
+def _run_together_worker(conn, question_id, title, mitre, system_prompt, model, log_callback):
+    """Together AI function-calling loop (OpenAI-compatible)."""
+    model = model or os.getenv("TOGETHER_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct")
+    client = _get_together_client()
+    tools = _build_openai_tools()
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Begin your investigation. Start by calling summarize_db to see what data is available, then use query_db to investigate."},
+    ]
+    finding_result = None
+
+    for iteration in range(1, _MAX_ITERATIONS + 1):
+        response = None
+        backoff = _INITIAL_BACKOFF
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+                break
+            except Exception as api_err:
+                err_str = str(api_err).lower()
+                is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
+                if is_rate_limit and attempt < _MAX_RETRIES:
+                    if log_callback:
+                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
+                    print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
+                    time.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    continue
+                raise
+
+        if response is None:
+            raise RuntimeError("All retries exhausted due to rate limiting")
+
+        choice = response.choices[0]
+        msg = choice.message
+        messages.append({k: v for k, v in msg.model_dump().items() if k in ("role", "content", "tool_calls")})
+
+        if not msg.tool_calls:
+            if choice.finish_reason == "stop":
+                messages.append({"role": "user", "content": "Continue your investigation. Use the tools to gather evidence, then call submit_finding when ready."})
+            continue
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            if log_callback:
+                log_callback("tool_call", {"question_id": question_id, "iteration": iteration, "tool": tool_name, "args": _truncate_args(tool_args)})
+
+            if tool_name == "submit_finding":
+                finding_result = tool_args
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"status": "accepted"})})
+                break
+            else:
+                result = dispatch_tool(conn, tool_name, tool_args)
+                result_str = json.dumps(result, default=str)
+                if len(result_str) > 8000:
+                    if isinstance(result.get("rows"), list) and len(result["rows"]) > 30:
+                        result["rows"] = result["rows"][:30]
+                        result["truncated"] = True
+                        result["note"] = "Showing first 30 rows. Use LIMIT in SQL for precise control."
+                    result_str = json.dumps(result, default=str)
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+
+        if finding_result:
+            break
+
+    return finding_result, iteration
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SambaNova backend (OpenAI-compatible, free tier)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_sambanova_client():
+    """Create an OpenAI-compatible client for SambaNova."""
+    api_key = os.getenv("SAMBANOVA_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("SAMBANOVA_API_KEY is required for SambaNova backend.")
+    from openai import OpenAI
+    return OpenAI(api_key=api_key, base_url="https://api.sambanova.ai/v1")
+
+
+def _run_sambanova_worker(conn, question_id, title, mitre, system_prompt, model, log_callback):
+    """SambaNova function-calling loop (OpenAI-compatible)."""
+    model = model or os.getenv("SAMBANOVA_MODEL", "Llama-4-Maverick-17B-128E-Instruct")
+    client = _get_sambanova_client()
+    tools = _build_openai_tools()
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Begin your investigation. Start by calling summarize_db to see what data is available, then use query_db to investigate."},
+    ]
+    finding_result = None
+
+    for iteration in range(1, _MAX_ITERATIONS + 1):
+        response = None
+        backoff = _INITIAL_BACKOFF
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.1,
+                )
+                break
+            except Exception as api_err:
+                err_str = str(api_err).lower()
+                is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
+                if is_rate_limit and attempt < _MAX_RETRIES:
+                    if log_callback:
+                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
+                    print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
+                    time.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    continue
+                raise
+
+        if response is None:
+            raise RuntimeError("All retries exhausted due to rate limiting")
+
+        choice = response.choices[0]
+        msg = choice.message
+        messages.append({k: v for k, v in msg.model_dump().items() if k in ("role", "content", "tool_calls")})
+
+        if not msg.tool_calls:
+            if choice.finish_reason == "stop":
+                messages.append({"role": "user", "content": "Continue your investigation. Use the tools to gather evidence, then call submit_finding when ready."})
+            continue
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            if log_callback:
+                log_callback("tool_call", {"question_id": question_id, "iteration": iteration, "tool": tool_name, "args": _truncate_args(tool_args)})
+
+            if tool_name == "submit_finding":
+                finding_result = tool_args
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"status": "accepted"})})
+                break
+            else:
+                result = dispatch_tool(conn, tool_name, tool_args)
+                result_str = json.dumps(result, default=str)
+                if len(result_str) > 8000:
+                    if isinstance(result.get("rows"), list) and len(result["rows"]) > 30:
+                        result["rows"] = result["rows"][:30]
+                        result["truncated"] = True
+                        result["note"] = "Showing first 30 rows. Use LIMIT in SQL for precise control."
+                    result_str = json.dumps(result, default=str)
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+
+        if finding_result:
+            break
+
+    return finding_result, iteration
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_fallback_order() -> List[tuple]:
+    """
+    Return the backend fallback order as a list of (backend, model) tuples.
+
+    Gemini is expanded into multiple entries (one per model in GEMINI_MODELS)
+    so that rate-limit exhaustion on one model falls through to the next.
+
+    Default order: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-1.5-flash
+                   → groq → together → sambanova
+    """
+    primary = _get_backend()
+    available: List[tuple] = []
+
+    # Helper: append gemini model entries
+    def _add_gemini():
+        api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+        if not api_key:
+            return
+        models_str = os.getenv("GEMINI_MODELS", "gemini-2.5-flash")
+        for m in models_str.split(","):
+            m = m.strip()
+            if m:
+                available.append(("gemini", m))
+
+    def _add_groq():
+        if os.getenv("GROQ_API_KEY", "").strip():
+            available.append(("groq", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")))
+
+    def _add_together():
+        if os.getenv("TOGETHER_API_KEY", "").strip():
+            available.append(("together", os.getenv("TOGETHER_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct")))
+
+    def _add_sambanova():
+        if os.getenv("SAMBANOVA_API_KEY", "").strip():
+            available.append(("sambanova", os.getenv("SAMBANOVA_MODEL", "Llama-4-Maverick-17B-128E-Instruct")))
+
+    # Build order: primary first, then the rest
+    adders = {
+        "gemini": _add_gemini,
+        "groq": _add_groq,
+        "together": _add_together,
+        "sambanova": _add_sambanova,
+    }
+    all_names = ["gemini", "groq", "together", "sambanova"]
+    order = [primary] + [b for b in all_names if b != primary]
+    for name in order:
+        if name in adders:
+            adders[name]()
+
+    return available if available else [("gemini", "gemini-2.5-flash")]
+
+
+_BACKEND_RUNNERS = {
+    "groq": lambda *a: _run_groq_worker(*a),
+    "together": lambda *a: _run_together_worker(*a),
+    "sambanova": lambda *a: _run_sambanova_worker(*a),
+    "gemini": lambda *a: _run_gemini_worker(*a),
+}
+
 
 def run_worker(
     conn: sqlite3.Connection,
@@ -363,36 +708,88 @@ def run_worker(
     log_callback=None,
 ) -> Finding:
     """
-    Run a single worker agent investigation loop.
+    Run a single worker agent investigation loop with automatic fallback.
 
-    Uses the backend specified by LLM_BACKEND env var ('gemini' or 'deepseek').
+    Tries the primary backend first. If it fails, automatically falls back
+    to other configured backends. All attempts and failures are logged.
     """
-    backend = _get_backend()
+    fallback_order = _get_fallback_order()
+    failed_backends = []
 
-    if log_callback:
-        log_callback("worker_started", {"question_id": question_id, "title": title, "backend": backend})
+    for i, (backend, backend_model) in enumerate(fallback_order):
+        is_fallback = i > 0
 
-    try:
-        if backend == "deepseek":
-            finding_result, iteration = _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, log_callback)
-        else:
-            finding_result, iteration = _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, log_callback)
-    except Exception as e:
+        if is_fallback:
+            print(f"    [Worker {question_id}] Falling back to {backend} ({backend_model})...")
+
         if log_callback:
-            log_callback("worker_error", {"question_id": question_id, "error": str(e)})
-        return _fallback_finding(question_id, title, mitre, str(e))
+            log_callback("worker_started", {
+                "question_id": question_id,
+                "title": title,
+                "backend": backend,
+                "model": backend_model,
+                "is_fallback": is_fallback,
+                "failed_backends": failed_backends.copy(),
+            })
 
+        try:
+            runner = _BACKEND_RUNNERS[backend]
+            finding_result, iteration = runner(conn, question_id, title, mitre, system_prompt, backend_model, log_callback)
+        except Exception as e:
+            error_msg = str(e)
+            # Shorten common error messages for display
+            if "Insufficient Balance" in error_msg:
+                short_err = "Insufficient Balance (credits exhausted)"
+            elif "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg:
+                short_err = "Rate limit exceeded (429)"
+            elif "invalid_api_key" in error_msg.lower() or "401" in error_msg:
+                short_err = "Invalid API key (401)"
+            else:
+                short_err = error_msg[:120]
+
+            failed_backends.append({"backend": backend, "model": backend_model, "error": short_err})
+            print(f"    [Worker {question_id}] {backend} ({backend_model}) FAILED: {short_err}")
+
+            if log_callback:
+                log_callback("backend_failed", {
+                    "question_id": question_id,
+                    "backend": backend,
+                    "model": backend_model,
+                    "error": short_err,
+                    "remaining_backends": [f"{b}/{m}" for b, m in fallback_order[i+1:]],
+                })
+            continue  # Try next backend
+
+        # Success
+        if log_callback:
+            log_callback("worker_completed", {
+                "question_id": question_id,
+                "iterations": iteration,
+                "has_finding": finding_result is not None,
+                "backend": backend,
+                "model": backend_model,
+                "failed_backends": failed_backends,
+            })
+
+        if not finding_result:
+            return _fallback_finding(question_id, title, mitre, "Agent reached maximum iterations without submitting.")
+
+        finding = _parse_finding(question_id, title, mitre, finding_result)
+        # Attach backend metadata to the finding summary
+        finding.tool_name = f"agent_{question_id.lower()} [{backend}/{backend_model}]"
+        if failed_backends:
+            finding.limitations = list(finding.limitations or [])
+            finding.limitations.insert(0, f"Backends tried before success: {', '.join(f['backend'] + ' (' + f['error'] + ')' for f in failed_backends)}")
+        return finding
+
+    # All backends failed
+    all_errors = "; ".join(f"{f['backend']}/{f['model']}: {f['error']}" for f in failed_backends)
     if log_callback:
-        log_callback("worker_completed", {
+        log_callback("all_backends_failed", {
             "question_id": question_id,
-            "iterations": iteration,
-            "has_finding": finding_result is not None,
+            "failed_backends": failed_backends,
         })
-
-    if not finding_result:
-        return _fallback_finding(question_id, title, mitre, "Agent reached maximum iterations without submitting.")
-
-    return _parse_finding(question_id, title, mitre, finding_result)
+    return _fallback_finding(question_id, title, mitre, f"All backends failed — {all_errors}")
 
 
 def _parse_finding(question_id: str, title: str, mitre: List[str], result: Dict[str, Any]) -> Finding:
