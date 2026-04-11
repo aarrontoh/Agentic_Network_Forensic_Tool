@@ -4,11 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Forensic Agent Dashboard</title>
-
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-
   <style>
     :root {
       --bg-dark: #06090e;
@@ -30,55 +28,31 @@
       --font-ui: 'Inter', system-ui, sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
     }
-
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
-      background: var(--bg-dark);
-      color: var(--text-main);
-      font-family: var(--font-ui);
-      line-height: 1.6;
-      min-height: 100vh;
-      -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
+      background: var(--bg-dark); color: var(--text-main); font-family: var(--font-ui);
+      line-height: 1.6; min-height: 100vh; -webkit-font-smoothing: antialiased; overflow-x: hidden;
     }
+    #particles-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+    #app-root { position: relative; z-index: 1; max-width: 1500px; margin: 0 auto; padding: 24px 32px 60px; }
 
-    /* ── Animated Particle Background ── */
-    #particles-canvas {
-      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-      z-index: 0; pointer-events: none;
-    }
-
-    #app-root {
-      position: relative; z-index: 1;
-      max-width: 1500px; margin: 0 auto; padding: 24px 32px 60px;
-    }
+    /* ── Waiting Spinner ── */
+    #waiting { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 60vh; text-align: center; color: var(--primary-cyan); }
+    #waiting p { font-size: 18px; font-weight: 300; letter-spacing: 2px; margin-top: 24px; animation: pulse-opacity 2s infinite; }
+    .cyber-spinner { width: 60px; height: 60px; border: 3px solid transparent; border-top-color: var(--primary-cyan); border-bottom-color: var(--success-green); border-radius: 50%; animation: spin 1.5s cubic-bezier(0.68,-0.55,0.265,1.55) infinite; position: relative; }
+    .cyber-spinner::before { content: ''; position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px; border: 2px solid transparent; border-left-color: var(--warning-amber); border-radius: 50%; animation: spin 1s linear infinite reverse; }
 
     /* ── Header ── */
-    .header {
-      display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
-      background: linear-gradient(135deg, rgba(16,23,40,0.95) 0%, rgba(10,14,24,0.8) 100%);
-      padding: 20px 28px; border-radius: 16px;
-      border: 1px solid var(--panel-border);
-      border-left: 4px solid var(--primary-cyan);
-      margin-bottom: 0;
-      box-shadow: 0 4px 40px rgba(0,0,0,0.4);
-    }
-    .header h1 {
-      font-size: 26px; font-weight: 800; letter-spacing: -0.5px;
-      background: linear-gradient(135deg, #fff 0%, var(--primary-cyan) 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    }
+    .header { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; background: linear-gradient(135deg, rgba(16,23,40,0.95) 0%, rgba(10,14,24,0.8) 100%); padding: 20px 28px; border-radius: 16px; border: 1px solid var(--panel-border); border-left: 4px solid var(--primary-cyan); margin-bottom: 0; box-shadow: 0 4px 40px rgba(0,0,0,0.4); }
+    .header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; background: linear-gradient(135deg, #fff 0%, var(--primary-cyan) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     .meta { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
-
-    .badge {
-      display: inline-flex; align-items: center; padding: 4px 12px;
-      border-radius: 20px; font-size: 10px; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 1.2px;
-    }
+    .badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; }
     .badge-starting { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.3); }
     .badge-preprocessing { background: rgba(0,229,255,0.1); color: var(--primary-cyan); border: 1px solid var(--primary-cyan); box-shadow: 0 0 10px var(--primary-glow); }
-    .badge-analyzing { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid var(--success-green); box-shadow: 0 0 10px var(--success-glow); animation: pulse-green 2s infinite; }
+    .badge-loading_database { background: rgba(179,136,255,0.1); color: var(--purple); border: 1px solid var(--purple); animation: pulse-border 2s infinite; }
+    .badge-multi_agent { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid var(--success-green); box-shadow: 0 0 10px var(--success-glow); animation: pulse-green 2s infinite; }
+    .badge-analyzing { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid var(--success-green); animation: pulse-green 2s infinite; }
+    .badge-synthesizing { background: rgba(255,179,0,0.1); color: var(--warning-amber); border: 1px solid var(--warning-amber); animation: pulse-border 2s infinite; }
     .badge-reporting { background: rgba(255,179,0,0.1); color: var(--warning-amber); border: 1px solid var(--warning-amber); }
     .badge-complete { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid var(--success-green); }
     .badge-waiting { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.3); }
@@ -87,123 +61,118 @@
     .badge-LOW { background: rgba(0,230,118,0.15); color: var(--success-green); border: 1px solid var(--success-green); }
 
     /* ── Tab Navigation ── */
-    .tab-nav {
-      display: flex; gap: 4px; padding: 6px;
-      background: rgba(10,15,26,0.8);
-      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-      border: 1px solid var(--panel-border);
-      border-top: none;
-      border-radius: 0 0 16px 16px;
-      margin-bottom: 28px;
-      position: sticky; top: 0; z-index: 100;
-    }
-    .tab-btn {
-      flex: 1; padding: 12px 16px;
-      background: transparent; border: 1px solid transparent; border-radius: 10px;
-      color: var(--text-muted); font-family: var(--font-ui);
-      font-size: 12px; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase;
-      cursor: pointer; transition: all 0.3s ease; position: relative;
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-    }
-    .tab-btn:hover {
-      color: var(--text-main); background: rgba(255,255,255,0.03);
-      border-color: rgba(255,255,255,0.06);
-    }
-    .tab-btn.active {
-      color: var(--primary-cyan);
-      background: rgba(0,229,255,0.06);
-      border-color: rgba(0,229,255,0.25);
-      box-shadow: 0 0 20px rgba(0,229,255,0.08);
-    }
-    .tab-btn.active::after {
-      content: ''; position: absolute; bottom: -1px; left: 20%; right: 20%;
-      height: 2px; background: var(--primary-cyan);
-      box-shadow: 0 0 8px var(--primary-cyan);
-      border-radius: 2px;
-    }
+    .tab-nav { display: flex; gap: 4px; padding: 6px; background: rgba(10,15,26,0.8); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--panel-border); border-top: none; border-radius: 0 0 16px 16px; margin-bottom: 28px; position: sticky; top: 0; z-index: 100; }
+    .tab-btn { flex: 1; padding: 12px 16px; background: transparent; border: 1px solid transparent; border-radius: 10px; color: var(--text-muted); font-family: var(--font-ui); font-size: 12px; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; gap: 8px; position: relative; }
+    .tab-btn:hover { color: var(--text-main); background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.06); }
+    .tab-btn.active { color: var(--primary-cyan); background: rgba(0,229,255,0.06); border-color: rgba(0,229,255,0.25); box-shadow: 0 0 20px rgba(0,229,255,0.08); }
+    .tab-btn.active::after { content: ''; position: absolute; bottom: -1px; left: 20%; right: 20%; height: 2px; background: var(--primary-cyan); box-shadow: 0 0 8px var(--primary-cyan); border-radius: 2px; }
     .tab-icon { font-size: 14px; }
-    .tab-notif {
-      font-size: 9px; background: var(--error-red); color: #fff;
-      padding: 1px 6px; border-radius: 10px; font-weight: 700;
-      min-width: 18px; text-align: center;
-    }
+    .tab-notif { font-size: 9px; background: var(--error-red); color: #fff; padding: 1px 6px; border-radius: 10px; font-weight: 700; min-width: 18px; text-align: center; }
 
     /* ── Tab Content ── */
     .tab-content { display: none; animation: fadeSlideIn 0.35s ease; }
     .tab-content.active { display: block; }
+    @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
-    @keyframes fadeSlideIn {
-      from { opacity: 0; transform: translateY(12px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    /* ── Glassmorphic Panels ── */
-    .panel {
-      background: var(--panel-bg);
-      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-      border: 1px solid var(--panel-border);
-      border-radius: 14px; padding: 24px; margin-bottom: 24px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-      transition: border-color 0.3s ease;
-    }
+    /* ── Panels ── */
+    .panel { background: var(--panel-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--panel-border); border-radius: 14px; padding: 24px; margin-bottom: 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); transition: border-color 0.3s ease; }
     .panel:hover { border-color: rgba(0,229,255,0.3); }
-
-    h2 {
-      font-size: 11px; text-transform: uppercase; letter-spacing: 2px;
-      color: var(--primary-cyan); margin-bottom: 16px; font-weight: 600;
-      display: flex; align-items: center; gap: 8px;
-    }
-    h2::before {
-      content: ''; display: inline-block; width: 8px; height: 8px;
-      background: var(--primary-cyan); box-shadow: 0 0 8px var(--primary-glow);
-    }
+    h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--primary-cyan); margin-bottom: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    h2::before { content: ''; display: inline-block; width: 8px; height: 8px; background: var(--primary-cyan); box-shadow: 0 0 8px var(--primary-glow); }
 
     /* ════════════════════════════════════════════
-       TAB 1: LIVE MONITOR
+       8-PHASE PIPELINE TRACKER
        ════════════════════════════════════════════ */
-    .progress-bar-wrap {
-      background: rgba(0,0,0,0.5); border-radius: 8px; height: 12px;
-      margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05);
-      overflow: hidden; position: relative;
+    .phase-pipeline { display: flex; flex-direction: column; gap: 0; }
+    .phase-row {
+      display: grid; grid-template-columns: 50px 1fr; gap: 0; position: relative;
     }
-    .progress-bar-fill {
-      height: 100%; width: 0%; border-radius: 8px;
-      transition: width 0.6s cubic-bezier(0.16,1,0.3,1);
-      background: linear-gradient(90deg, #007bb5 0%, var(--primary-cyan) 100%);
-      box-shadow: 0 0 15px var(--primary-glow);
+    .phase-line-area {
+      display: flex; flex-direction: column; align-items: center; position: relative;
     }
-    .progress-bar-fill.active::after {
-      content: ''; position: absolute; top: 0; left: 0; bottom: 0; right: 0;
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-      animation: shimmer 1.5s infinite;
+    .phase-dot {
+      width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 800; font-family: var(--font-mono);
+      border: 2px solid var(--panel-border); background: var(--bg-dark); color: var(--text-dim);
+      z-index: 2; transition: all 0.4s ease; flex-shrink: 0;
     }
-    .progress-label {
-      font-size: 13px; color: var(--text-muted); font-family: var(--font-mono);
-      display: flex; justify-content: space-between;
-    }
+    .phase-dot.done { border-color: var(--success-green); color: var(--success-green); background: rgba(0,230,118,0.1); box-shadow: 0 0 12px rgba(0,230,118,0.3); }
+    .phase-dot.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.1); box-shadow: 0 0 12px var(--primary-glow); animation: pulse-border 2s infinite; }
+    .phase-dot.error { border-color: var(--error-red); color: var(--error-red); background: rgba(255,61,0,0.1); }
+    .phase-connector { width: 2px; flex-grow: 1; background: rgba(255,255,255,0.06); min-height: 8px; }
+    .phase-connector.done { background: var(--success-green); box-shadow: 0 0 6px rgba(0,230,118,0.3); }
+    .phase-connector.active { background: linear-gradient(180deg, var(--primary-cyan), rgba(0,229,255,0.1)); animation: pulse-opacity 1.5s infinite; }
 
-    .pipeline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-    .step {
-      padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 600;
-      border: 1px solid var(--panel-border); background: rgba(0,0,0,0.3);
-      color: var(--text-muted); transition: all 0.3s;
-      display: flex; align-items: center; gap: 8px;
+    .phase-card {
+      background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.04); border-radius: 12px;
+      padding: 16px 20px; margin: 4px 0 4px 0; transition: all 0.3s ease; min-height: 60px;
     }
-    .step.done { background: rgba(0,230,118,0.1); border-color: rgba(0,230,118,0.4); color: var(--success-green); }
-    .step.active { background: rgba(0,229,255,0.1); border-color: var(--primary-cyan); color: var(--text-main); box-shadow: 0 0 12px var(--primary-glow); animation: pulse-border 2s infinite; }
-    .arrow { color: rgba(255,255,255,0.1); font-size: 14px; font-weight: bold; }
+    .phase-card.active { background: rgba(0,229,255,0.03); border-color: rgba(0,229,255,0.15); }
+    .phase-card.done { border-color: rgba(0,230,118,0.15); }
 
+    .phase-title-row { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+    .phase-name { font-size: 13px; font-weight: 700; color: var(--text-main); }
+    .phase-name.dim { color: var(--text-dim); }
+    .phase-desc { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-bottom: 8px; }
+    .phase-status-text { font-size: 11px; color: var(--primary-cyan); font-family: var(--font-mono); font-weight: 500; }
+    .phase-status-text.done { color: var(--success-green); }
+    .phase-status-text.error { color: var(--error-red); }
+
+    /* Phase detail: data chips */
+    .phase-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip { font-size: 10px; padding: 3px 10px; border-radius: 6px; font-family: var(--font-mono); border: 1px solid var(--panel-border); background: rgba(0,0,0,0.4); color: var(--text-muted); transition: all 0.3s; }
+    .chip.ok { border-color: rgba(0,230,118,0.4); color: var(--success-green); background: rgba(0,230,118,0.05); }
+    .chip.error { border-color: rgba(255,61,0,0.4); color: var(--error-red); background: rgba(255,61,0,0.05); }
+    .chip.active { border-color: rgba(0,229,255,0.4); color: var(--primary-cyan); background: rgba(0,229,255,0.05); animation: pulse-opacity 2s infinite; }
+
+    /* Phase 5 DB loading bar */
+    .db-bar-wrap { background: rgba(0,0,0,0.5); border-radius: 6px; height: 8px; margin-top: 8px; border: 1px solid rgba(255,255,255,0.04); overflow: hidden; }
+    .db-bar-fill { height: 100%; width: 0%; border-radius: 6px; background: linear-gradient(90deg, var(--purple), var(--primary-cyan)); transition: width 0.6s ease; position: relative; }
+    .db-bar-fill.shimmer::after { content: ''; position: absolute; top: 0; left: 0; bottom: 0; right: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent); animation: shimmer 1.5s infinite; }
+
+    /* Phase 6 worker agents */
+    .worker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+    @media (max-width: 900px) { .worker-grid { grid-template-columns: 1fr; } }
+    .worker-card {
+      background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px;
+      padding: 14px 16px; transition: all 0.3s; position: relative; overflow: hidden;
+    }
+    .worker-card::before { content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: var(--text-dim); transition: all 0.3s; }
+    .worker-card.running::before { background: var(--primary-cyan); box-shadow: 0 0 8px var(--primary-glow); }
+    .worker-card.done::before { background: var(--success-green); }
+    .worker-card.error::before { background: var(--error-red); }
+    .worker-card.running { border-color: rgba(0,229,255,0.2); background: rgba(0,229,255,0.02); }
+    .worker-card.done { border-color: rgba(0,230,118,0.15); }
+
+    .worker-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .worker-letter { font-size: 22px; font-weight: 800; font-family: var(--font-mono); color: var(--text-dim); }
+    .worker-card.running .worker-letter { color: var(--primary-cyan); }
+    .worker-card.done .worker-letter { color: var(--success-green); }
+    .worker-title { font-size: 12px; font-weight: 600; color: var(--text-main); }
+    .worker-subtitle { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    .worker-progress { margin-top: 8px; }
+    .worker-iter { font-size: 10px; font-family: var(--font-mono); color: var(--text-muted); margin-bottom: 4px; }
+    .worker-iter-bar { background: rgba(0,0,0,0.5); height: 4px; border-radius: 2px; overflow: hidden; }
+    .worker-iter-fill { height: 100%; background: var(--primary-cyan); border-radius: 2px; transition: width 0.3s; }
+    .worker-card.done .worker-iter-fill { background: var(--success-green); }
+
+    .worker-last-query { font-size: 10px; font-family: var(--font-mono); color: var(--text-dim); margin-top: 6px; padding: 6px 8px; background: rgba(0,0,0,0.3); border-radius: 4px; max-height: 40px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .worker-finding-preview { font-size: 11px; color: #b0c0d0; margin-top: 8px; line-height: 1.5; }
+    .worker-confidence { display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-top: 6px; }
+
+    /* ════════════════════════════════════════════
+       ELAPSED TIMER
+       ════════════════════════════════════════════ */
+    .elapsed { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); }
+    .elapsed .num { color: var(--primary-cyan); font-weight: 600; }
+
+    /* ════════════════════════════════════════════
+       FINDINGS GRID (Live Monitor)
+       ════════════════════════════════════════════ */
     .findings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
-    .finding-card {
-      background: linear-gradient(145deg, rgba(16,23,40,0.9), rgba(10,14,24,0.9));
-      border: 1px solid var(--panel-border); border-radius: 12px; padding: 20px;
-      transition: transform 0.3s cubic-bezier(0.175,0.885,0.32,1.275), box-shadow 0.3s ease;
-      position: relative; overflow: hidden;
-    }
-    .finding-card::before {
-      content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%;
-      background: var(--panel-border); transition: background 0.3s;
-    }
+    .finding-card { background: linear-gradient(145deg, rgba(16,23,40,0.9), rgba(10,14,24,0.9)); border: 1px solid var(--panel-border); border-radius: 12px; padding: 20px; transition: transform 0.3s cubic-bezier(0.175,0.885,0.32,1.275), box-shadow 0.3s ease; position: relative; overflow: hidden; }
+    .finding-card::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: var(--panel-border); transition: background 0.3s; }
     .finding-card.done::before { background: var(--primary-cyan); box-shadow: 0 0 10px var(--primary-glow); }
     .finding-card:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.4); border-color: rgba(255,255,255,0.1); }
     .finding-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -213,130 +182,46 @@
     .finding-evidence { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); background: rgba(0,0,0,0.4); padding: 6px 10px; border-radius: 6px; display: inline-block; }
     .finding-model { font-size: 11px; color: var(--primary-cyan); font-family: var(--font-mono); background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.2); padding: 3px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
     .finding-model.error { color: #ff6b6b; background: rgba(255,107,107,0.08); border-color: rgba(255,107,107,0.2); }
-    .finding-failures { font-size: 11px; color: #ff6b6b; font-family: var(--font-mono); background: rgba(255,50,50,0.06); border: 1px solid rgba(255,50,50,0.15); padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; line-height: 1.5; }
-    .finding-failures .fail-label { color: #ff9f43; font-weight: 600; }
     .finding-pending { font-size: 13px; color: var(--text-muted); font-style: italic; opacity: 0.7; }
 
-    .seg-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-    .seg-chip {
-      font-size: 10px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono);
-      border: 1px solid var(--panel-border); background: rgba(0,0,0,0.4); color: var(--text-muted);
-      transition: all 0.3s ease;
-    }
-    .seg-chip.ok { border-color: rgba(0,230,118,0.4); color: var(--success-green); background: rgba(0,230,118,0.05); }
-    .seg-chip.error { border-color: rgba(255,61,0,0.4); color: var(--error-red); background: rgba(255,61,0,0.05); }
-
-    .phase-label {
-      font-size: 11px; color: var(--text-muted); margin-bottom: 10px;
-      font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.5px;
-      display: flex; align-items: center; gap: 8px;
-    }
-    .phase-num {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 20px; height: 20px; border-radius: 50%;
-      background: rgba(0,229,255,0.1); border: 1px solid rgba(0,229,255,0.3);
-      color: var(--primary-cyan); font-size: 10px; font-weight: 700;
-    }
-
-    .live-timeline-list { list-style: none; margin-top: 16px; position: relative; }
-    .live-timeline-list::before { content: ''; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.05); }
-    .live-timeline-list li { position: relative; padding: 12px 0 12px 28px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.02); }
-    .live-timeline-list li:last-child { border-bottom: none; }
-    .live-timeline-list li::before {
-      content: ''; position: absolute; left: 0; top: 16px; width: 12px; height: 12px;
-      border-radius: 50%; background: var(--bg-dark); border: 2px solid var(--primary-cyan);
-      box-shadow: 0 0 8px var(--primary-glow);
-    }
-    .live-timeline-list li:hover::before { background: var(--primary-cyan); }
-    .tl-ts { color: var(--primary-cyan); font-family: var(--font-mono); margin-right: 12px; font-size: 12px; opacity: 0.8; }
+    /* ════════════════════════════════════════════
+       LLM ACTIVITY LOG
+       ════════════════════════════════════════════ */
+    .llm-log-wrap { max-height: 500px; overflow-y: auto; font-family: var(--font-mono); font-size: 11px; line-height: 1.8; }
 
     /* ════════════════════════════════════════════
-       TAB 2: FINDINGS
+       TAB 2: FINDINGS DETAIL
        ════════════════════════════════════════════ */
-    .finding-full-card {
-      background: var(--panel-bg-solid);
-      border: 1px solid var(--panel-border);
-      border-radius: 14px; margin-bottom: 20px;
-      overflow: hidden; transition: border-color 0.3s;
-    }
+    .finding-full-card { background: var(--panel-bg-solid); border: 1px solid var(--panel-border); border-radius: 14px; margin-bottom: 20px; overflow: hidden; transition: border-color 0.3s; }
     .finding-full-card:hover { border-color: rgba(0,229,255,0.35); }
-    .finding-full-header {
-      display: flex; align-items: center; gap: 16px; padding: 20px 24px;
-      cursor: pointer; user-select: none; transition: background 0.2s;
-    }
+    .finding-full-header { display: flex; align-items: center; gap: 16px; padding: 20px 24px; cursor: pointer; user-select: none; transition: background 0.2s; }
     .finding-full-header:hover { background: rgba(255,255,255,0.02); }
-    .fq-letter {
-      font-size: 32px; font-weight: 800; font-family: var(--font-mono);
-      color: var(--primary-cyan); min-width: 50px; text-align: center;
-      text-shadow: 0 0 20px var(--primary-glow);
-    }
+    .fq-letter { font-size: 32px; font-weight: 800; font-family: var(--font-mono); color: var(--primary-cyan); min-width: 50px; text-align: center; text-shadow: 0 0 20px var(--primary-glow); }
     .fq-info { flex: 1; }
     .fq-title { font-size: 16px; font-weight: 700; color: var(--text-main); margin-bottom: 4px; }
     .fq-question { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
-    .fq-chevron {
-      font-size: 18px; color: var(--text-dim); transition: transform 0.3s;
-    }
+    .fq-chevron { font-size: 18px; color: var(--text-dim); transition: transform 0.3s; }
     .finding-full-card.open .fq-chevron { transform: rotate(180deg); }
-    .fq-body {
-      max-height: 0; overflow: hidden; transition: max-height 0.4s ease;
-    }
+    .fq-body { max-height: 0; overflow: hidden; transition: max-height 0.4s ease; }
     .finding-full-card.open .fq-body { max-height: 3000px; }
     .fq-body-inner { padding: 0 24px 24px; }
-
-    .fq-section-title {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px;
-      color: var(--primary-cyan); margin: 20px 0 10px; font-weight: 600;
-    }
+    .fq-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--primary-cyan); margin: 20px 0 10px; font-weight: 600; }
     .fq-summary-text { font-size: 14px; color: #c0d0e0; line-height: 1.7; }
-    .fq-mitre-chip {
-      display: inline-block; padding: 4px 12px; border-radius: 6px;
-      background: rgba(41,121,255,0.1); border: 1px solid rgba(41,121,255,0.3);
-      color: var(--primary-blue); font-size: 11px; font-weight: 600;
-      font-family: var(--font-mono); margin-right: 6px; margin-bottom: 6px;
-    }
-
-    .evidence-table {
-      width: 100%; border-collapse: collapse; margin-top: 8px;
-      font-size: 12px;
-    }
-    .evidence-table th {
-      text-align: left; padding: 10px 12px; font-size: 10px;
-      text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted);
-      border-bottom: 1px solid rgba(255,255,255,0.06); font-weight: 600;
-    }
-    .evidence-table td {
-      padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.03);
-      color: #b0c0d0; font-family: var(--font-mono); font-size: 11px;
-      vertical-align: top; max-width: 400px; word-break: break-word;
-    }
+    .fq-mitre-chip { display: inline-block; padding: 4px 12px; border-radius: 6px; background: rgba(41,121,255,0.1); border: 1px solid rgba(41,121,255,0.3); color: var(--primary-blue); font-size: 11px; font-weight: 600; font-family: var(--font-mono); margin-right: 6px; margin-bottom: 6px; }
+    .evidence-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+    .evidence-table th { text-align: left; padding: 10px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.06); font-weight: 600; }
+    .evidence-table td { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.03); color: #b0c0d0; font-family: var(--font-mono); font-size: 11px; vertical-align: top; max-width: 400px; word-break: break-word; }
     .evidence-table tr:hover td { background: rgba(0,229,255,0.02); }
-
-    .fq-limitations, .fq-next-steps {
-      list-style: none; margin-top: 6px;
-    }
-    .fq-limitations li, .fq-next-steps li {
-      font-size: 13px; color: var(--text-muted); padding: 4px 0 4px 16px;
-      position: relative;
-    }
+    .fq-limitations, .fq-next-steps { list-style: none; margin-top: 6px; }
+    .fq-limitations li, .fq-next-steps li { font-size: 13px; color: var(--text-muted); padding: 4px 0 4px 16px; position: relative; }
     .fq-limitations li::before { content: '!'; position: absolute; left: 0; color: var(--warning-amber); font-weight: 700; font-size: 11px; }
     .fq-next-steps li::before { content: '>'; position: absolute; left: 0; color: var(--primary-cyan); font-family: var(--font-mono); font-weight: 700; }
-
-    .findings-empty {
-      text-align: center; padding: 80px 20px; color: var(--text-dim);
-      font-size: 14px;
-    }
-    .findings-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+    .findings-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
 
     /* ════════════════════════════════════════════
        TAB 3: REPORT
        ════════════════════════════════════════════ */
-    .report-container {
-      background: var(--panel-bg-solid);
-      border: 1px solid var(--panel-border);
-      border-radius: 14px; padding: 40px 48px;
-      max-width: 900px; margin: 0 auto;
-      box-shadow: 0 8px 40px rgba(0,0,0,0.3);
-    }
+    .report-container { background: var(--panel-bg-solid); border: 1px solid var(--panel-border); border-radius: 14px; padding: 40px 48px; max-width: 900px; margin: 0 auto; box-shadow: 0 8px 40px rgba(0,0,0,0.3); }
     .report-container h1 { font-size: 28px; font-weight: 800; color: var(--text-main); margin: 32px 0 16px; border-bottom: 2px solid rgba(0,229,255,0.2); padding-bottom: 12px; }
     .report-container h1:first-child { margin-top: 0; }
     .report-container h2 { font-size: 20px; font-weight: 700; color: var(--primary-cyan); margin: 28px 0 12px; letter-spacing: 0; text-transform: none; display: block; }
@@ -345,123 +230,51 @@
     .report-container p { font-size: 14px; color: #b8c8d8; line-height: 1.8; margin-bottom: 12px; }
     .report-container ul, .report-container ol { padding-left: 24px; margin-bottom: 12px; }
     .report-container li { font-size: 14px; color: #b8c8d8; line-height: 1.8; margin-bottom: 4px; }
-    .report-container code {
-      background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.15);
-      padding: 2px 8px; border-radius: 4px; font-family: var(--font-mono);
-      font-size: 12px; color: var(--primary-cyan);
-    }
-    .report-container pre {
-      background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 8px; padding: 16px 20px; overflow-x: auto;
-      margin-bottom: 16px;
-    }
-    .report-container pre code {
-      background: none; border: none; padding: 0; font-size: 12px; color: #a0b8d0;
-    }
-    .report-container blockquote {
-      border-left: 3px solid var(--primary-cyan); padding: 8px 16px;
-      margin: 12px 0; background: rgba(0,229,255,0.03); border-radius: 0 8px 8px 0;
-    }
+    .report-container code { background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.15); padding: 2px 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; color: var(--primary-cyan); }
+    .report-container pre { background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 16px 20px; overflow-x: auto; margin-bottom: 16px; }
+    .report-container pre code { background: none; border: none; padding: 0; font-size: 12px; color: #a0b8d0; }
+    .report-container blockquote { border-left: 3px solid var(--primary-cyan); padding: 8px 16px; margin: 12px 0; background: rgba(0,229,255,0.03); border-radius: 0 8px 8px 0; }
     .report-container blockquote p { color: var(--text-muted); margin-bottom: 0; }
-    .report-container table {
-      width: 100%; border-collapse: collapse; margin-bottom: 16px;
-    }
-    .report-container table th {
-      text-align: left; padding: 10px 12px; font-size: 11px; text-transform: uppercase;
-      letter-spacing: 1px; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.08);
-    }
-    .report-container table td {
-      padding: 10px 12px; font-size: 13px; color: #b0c0d0;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
-    }
-    .report-container hr {
-      border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 24px 0;
-    }
+    .report-container table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+    .report-container table th { text-align: left; padding: 10px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .report-container table td { padding: 10px 12px; font-size: 13px; color: #b0c0d0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .report-container hr { border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 24px 0; }
     .report-container strong { color: var(--text-main); }
     .report-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
-    .report-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
 
     /* ════════════════════════════════════════════
        TAB 4: TIMELINE
        ════════════════════════════════════════════ */
     .timeline-vertical { position: relative; padding: 0 0 0 40px; }
-    .timeline-vertical::before {
-      content: ''; position: absolute; left: 19px; top: 0; bottom: 0;
-      width: 2px; background: linear-gradient(180deg, var(--primary-cyan), var(--panel-border), transparent);
-    }
-    .tl-event {
-      position: relative; margin-bottom: 4px; padding: 16px 20px;
-      background: var(--panel-bg); border: 1px solid var(--panel-border);
-      border-radius: 10px; transition: all 0.3s ease;
-    }
-    .tl-event:hover {
-      border-color: rgba(0,229,255,0.3);
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-      transform: translateX(4px);
-    }
-    .tl-event::before {
-      content: ''; position: absolute; left: -29px; top: 20px;
-      width: 14px; height: 14px; border-radius: 50%;
-      background: var(--bg-dark); border: 2px solid var(--text-dim);
-      transition: all 0.3s;
-      box-shadow: 0 0 0 4px var(--bg-dark);
-    }
+    .timeline-vertical::before { content: ''; position: absolute; left: 19px; top: 0; bottom: 0; width: 2px; background: linear-gradient(180deg, var(--primary-cyan), var(--panel-border), transparent); }
+    .tl-event { position: relative; margin-bottom: 4px; padding: 16px 20px; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; transition: all 0.3s ease; }
+    .tl-event:hover { border-color: rgba(0,229,255,0.3); box-shadow: 0 4px 20px rgba(0,0,0,0.3); transform: translateX(4px); }
+    .tl-event::before { content: ''; position: absolute; left: -29px; top: 20px; width: 14px; height: 14px; border-radius: 50%; background: var(--bg-dark); border: 2px solid var(--text-dim); transition: all 0.3s; box-shadow: 0 0 0 4px var(--bg-dark); }
     .tl-event:hover::before { border-color: var(--primary-cyan); box-shadow: 0 0 0 4px var(--bg-dark), 0 0 10px var(--primary-glow); }
-
     .tl-event.cat-initial_access::before { border-color: var(--error-red); }
     .tl-event.cat-lateral_movement::before { border-color: var(--warning-amber); }
     .tl-event.cat-exfiltration::before { border-color: var(--purple); }
     .tl-event.cat-payload_delivery::before { border-color: var(--primary-blue); }
-    .tl-event.cat-c2::before { border-color: var(--error-red); }
-    .tl-event.cat-reconnaissance::before { border-color: var(--warning-amber); }
-
-    .tl-event-time {
-      font-size: 11px; font-family: var(--font-mono); color: var(--primary-cyan);
-      margin-bottom: 6px; opacity: 0.8;
-    }
+    .tl-event-time { font-size: 11px; font-family: var(--font-mono); color: var(--primary-cyan); margin-bottom: 6px; opacity: 0.8; }
     .tl-event-title { font-size: 14px; font-weight: 600; color: var(--text-main); margin-bottom: 4px; }
     .tl-event-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
-    .tl-event-cat {
-      display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: 1px; padding: 2px 8px; border-radius: 4px; margin-top: 8px;
-    }
+    .tl-event-cat { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 2px 8px; border-radius: 4px; margin-top: 8px; }
     .tl-cat-initial_access { background: rgba(255,61,0,0.12); color: var(--error-red); border: 1px solid rgba(255,61,0,0.3); }
     .tl-cat-lateral_movement { background: rgba(255,179,0,0.12); color: var(--warning-amber); border: 1px solid rgba(255,179,0,0.3); }
     .tl-cat-exfiltration { background: rgba(179,136,255,0.12); color: var(--purple); border: 1px solid rgba(179,136,255,0.3); }
     .tl-cat-payload_delivery { background: rgba(41,121,255,0.12); color: var(--primary-blue); border: 1px solid rgba(41,121,255,0.3); }
-    .tl-cat-c2 { background: rgba(255,61,0,0.12); color: var(--error-red); border: 1px solid rgba(255,61,0,0.3); }
-    .tl-cat-reconnaissance { background: rgba(255,179,0,0.12); color: var(--warning-amber); border: 1px solid rgba(255,179,0,0.3); }
     .tl-cat-default { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.2); }
-
-    .timeline-legend {
-      display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px;
-    }
-    .legend-item {
-      display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted);
-    }
+    .timeline-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
     .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
-
     .timeline-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
-    .timeline-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
 
     /* ════════════════════════════════════════════
        TAB 5: AGENT LOG
        ════════════════════════════════════════════ */
-    .log-entry {
-      display: flex; gap: 14px; padding: 14px 18px;
-      background: var(--panel-bg); border: 1px solid var(--panel-border);
-      border-radius: 10px; margin-bottom: 6px;
-      transition: all 0.2s ease; align-items: flex-start;
-    }
-    .log-entry:hover {
-      border-color: rgba(0,229,255,0.2);
-      background: rgba(16,23,40,0.85);
-    }
-    .log-type-badge {
-      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
-      padding: 3px 10px; border-radius: 4px; white-space: nowrap; min-width: 80px;
-      text-align: center; flex-shrink: 0;
-    }
+    .log-entry { display: flex; gap: 14px; padding: 14px 18px; background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px; margin-bottom: 6px; transition: all 0.2s ease; align-items: flex-start; }
+    .log-entry:hover { border-color: rgba(0,229,255,0.2); background: rgba(16,23,40,0.85); }
+    .log-type-badge { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 3px 10px; border-radius: 4px; white-space: nowrap; min-width: 80px; text-align: center; flex-shrink: 0; }
     .log-type-tool_call { background: rgba(0,229,255,0.1); color: var(--primary-cyan); border: 1px solid rgba(0,229,255,0.25); }
     .log-type-tool_result { background: rgba(0,230,118,0.1); color: var(--success-green); border: 1px solid rgba(0,230,118,0.25); }
     .log-type-reasoning { background: rgba(179,136,255,0.1); color: var(--purple); border: 1px solid rgba(179,136,255,0.25); }
@@ -469,62 +282,29 @@
     .log-type-error { background: rgba(255,61,0,0.1); color: var(--error-red); border: 1px solid rgba(255,61,0,0.25); }
     .log-type-ingest { background: rgba(41,121,255,0.1); color: var(--primary-blue); border: 1px solid rgba(41,121,255,0.25); }
     .log-type-default { background: rgba(138,155,178,0.1); color: var(--text-muted); border: 1px solid rgba(138,155,178,0.2); }
-
     .log-body { flex: 1; min-width: 0; }
     .log-timestamp { font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin-bottom: 4px; }
     .log-message { font-size: 13px; color: #b0c0d0; line-height: 1.6; }
-    .log-detail {
-      font-size: 11px; font-family: var(--font-mono); color: var(--text-dim);
-      background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px;
-      margin-top: 8px; max-height: 200px; overflow-y: auto; white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .log-filter-bar {
-      display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap;
-    }
-    .log-filter-btn {
-      padding: 5px 14px; border-radius: 6px; font-size: 11px; font-weight: 600;
-      background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border);
-      color: var(--text-muted); cursor: pointer; transition: all 0.2s;
-      text-transform: uppercase; letter-spacing: 0.5px;
-    }
+    .log-detail { font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; margin-top: 8px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+    .log-filter-bar { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+    .log-filter-btn { padding: 5px 14px; border-radius: 6px; font-size: 11px; font-weight: 600; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-muted); cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
     .log-filter-btn:hover { border-color: rgba(255,255,255,0.1); color: var(--text-main); }
     .log-filter-btn.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.06); }
     .log-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
-    .log-empty .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
 
-    /* ── Spinner / Waiting ── */
-    #waiting {
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      height: 60vh; text-align: center; color: var(--primary-cyan);
-    }
-    #waiting p { font-size: 18px; font-weight: 300; letter-spacing: 2px; margin-top: 24px; animation: pulse-opacity 2s infinite; }
-    .cyber-spinner {
-      width: 60px; height: 60px; border: 3px solid transparent;
-      border-top-color: var(--primary-cyan); border-bottom-color: var(--success-green);
-      border-radius: 50%; animation: spin 1.5s cubic-bezier(0.68,-0.55,0.265,1.55) infinite;
-      position: relative;
-    }
-    .cyber-spinner::before {
-      content: ''; position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px;
-      border: 2px solid transparent; border-left-color: var(--warning-amber);
-      border-radius: 50%; animation: spin 1s linear infinite reverse;
-    }
-
-    /* ── Scrollbar ── */
+    /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
 
-    /* ── Animations ── */
+    /* Animations */
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes pulse-border { 0% { box-shadow: 0 0 0 0 var(--primary-glow); } 70% { box-shadow: 0 0 0 10px rgba(0,229,255,0); } 100% { box-shadow: 0 0 0 0 rgba(0,229,255,0); } }
     @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 var(--success-glow); } 70% { box-shadow: 0 0 0 8px rgba(0,230,118,0); } 100% { box-shadow: 0 0 0 0 rgba(0,230,118,0); } }
     @keyframes pulse-opacity { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     @keyframes shimmer { 100% { transform: translateX(100%); } }
 
-    /* ── Responsive ── */
     @media (max-width: 768px) {
       #app-root { padding: 12px 16px 40px; }
       .header { padding: 16px; }
@@ -532,7 +312,7 @@
       .tab-btn { padding: 10px 8px; font-size: 10px; }
       .tab-btn .tab-label { display: none; }
       .report-container { padding: 24px; }
-      .findings-grid { grid-template-columns: 1fr; }
+      .worker-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -546,330 +326,285 @@
 </div>
 
 <div id="app-root" style="display:none;">
-  <!-- Header -->
   <div class="header">
     <div style="flex-grow:1;">
       <h1 id="case-id">---</h1>
-      <div style="display:flex;gap:16px;margin-top:8px;">
+      <div style="display:flex;gap:16px;margin-top:8px;align-items:center;">
         <span class="meta" id="started-at"></span>
         <span class="meta" id="updated-at"></span>
+        <span class="elapsed" id="elapsed-timer"></span>
       </div>
     </div>
     <span id="stage-badge" class="badge badge-waiting">waiting</span>
   </div>
 
-  <!-- Tab Navigation -->
   <nav class="tab-nav">
-    <button class="tab-btn active" data-tab="live">
-      <span class="tab-icon">&#9678;</span>
-      <span class="tab-label">Live Monitor</span>
-    </button>
-    <button class="tab-btn" data-tab="findings">
-      <span class="tab-icon">&#9632;</span>
-      <span class="tab-label">Findings</span>
-      <span class="tab-notif" id="findings-count" style="display:none">0</span>
-    </button>
-    <button class="tab-btn" data-tab="report">
-      <span class="tab-icon">&#9998;</span>
-      <span class="tab-label">Report</span>
-    </button>
-    <button class="tab-btn" data-tab="timeline">
-      <span class="tab-icon">&#8942;</span>
-      <span class="tab-label">Timeline</span>
-    </button>
-    <button class="tab-btn" data-tab="agentlog">
-      <span class="tab-icon">&#9881;</span>
-      <span class="tab-label">Agent Log</span>
-    </button>
+    <button class="tab-btn active" data-tab="live"><span class="tab-icon">&#9678;</span><span class="tab-label">Live Monitor</span></button>
+    <button class="tab-btn" data-tab="findings"><span class="tab-icon">&#9632;</span><span class="tab-label">Findings</span><span class="tab-notif" id="findings-count" style="display:none">0</span></button>
+    <button class="tab-btn" data-tab="report"><span class="tab-icon">&#9998;</span><span class="tab-label">Report</span></button>
+    <button class="tab-btn" data-tab="timeline"><span class="tab-icon">&#8942;</span><span class="tab-label">Timeline</span></button>
+    <button class="tab-btn" data-tab="agentlog"><span class="tab-icon">&#9881;</span><span class="tab-label">Agent Log</span></button>
   </nav>
 
   <!-- ═══ TAB 1: LIVE MONITOR ═══ -->
   <div class="tab-content active" id="tab-live">
     <div class="panel">
-      <h2>Global Progress Pipeline</h2>
-      <div class="progress-bar-wrap">
-        <div class="progress-bar-fill" id="pcap-bar"></div>
-      </div>
-      <div class="progress-label">
-        <span id="pcap-label">---</span>
-        <span id="pcap-sublabel" style="opacity:0.7"></span>
-      </div>
-      <div style="margin-top:24px;">
-        <div class="pipeline" id="pipeline"></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h2>Autonomous Findings</h2>
-      <div class="findings-grid" id="findings-grid"></div>
-    </div>
-
-    <div class="panel" id="seg-section">
-      <h2>Ingest Pipeline Detail</h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px 32px;">
-        <div>
-          <div class="phase-label"><span class="phase-num">1</span> ALERT INGESTION</div>
-          <div class="seg-list" id="alert-segs"></div>
-        </div>
-        <div>
-          <div class="phase-label"><span class="phase-num">2</span> ZEEK CORRELATION</div>
-          <div class="seg-list" id="zeek-segs"></div>
-        </div>
-        <div>
-          <div class="phase-label"><span class="phase-num">3</span> PCAP TARGETING</div>
-          <div class="seg-list" id="pcap-index-segs"></div>
-        </div>
-        <div>
-          <div class="phase-label"><span class="phase-num">4</span> TSHARK DEEP ANALYSIS</div>
-          <div class="seg-list" id="tshark-segs"></div>
-        </div>
-      </div>
+      <h2>Investigation Pipeline</h2>
+      <div class="phase-pipeline" id="phase-pipeline"></div>
     </div>
 
     <div class="panel" id="llm-log-section" style="display:none">
       <h2>LLM Activity Log</h2>
-      <div id="llm-log-container" style="max-height:500px;overflow-y:auto;font-family:var(--font-mono);font-size:11px;line-height:1.8;"></div>
-    </div>
-
-    <div class="panel" id="live-timeline-section" style="display:none">
-      <h2>Event Timeline</h2>
-      <ul class="live-timeline-list" id="live-timeline-list"></ul>
+      <div class="llm-log-wrap" id="llm-log-container"></div>
     </div>
   </div>
 
   <!-- ═══ TAB 2: FINDINGS ═══ -->
-  <div class="tab-content" id="tab-findings">
-    <div id="findings-full-container"></div>
-  </div>
+  <div class="tab-content" id="tab-findings"><div id="findings-full-container"></div></div>
 
   <!-- ═══ TAB 3: REPORT ═══ -->
-  <div class="tab-content" id="tab-report">
-    <div id="report-full-container"></div>
-  </div>
+  <div class="tab-content" id="tab-report"><div id="report-full-container"></div></div>
 
   <!-- ═══ TAB 4: TIMELINE ═══ -->
-  <div class="tab-content" id="tab-timeline">
-    <div id="timeline-full-container"></div>
-  </div>
+  <div class="tab-content" id="tab-timeline"><div id="timeline-full-container"></div></div>
 
   <!-- ═══ TAB 5: AGENT LOG ═══ -->
-  <div class="tab-content" id="tab-agentlog">
-    <div id="agentlog-full-container"></div>
-  </div>
+  <div class="tab-content" id="tab-agentlog"><div id="agentlog-full-container"></div></div>
 </div>
 
 <script>
 // ═══════════════════════════════════════════════
-// PARTICLE BACKGROUND
+// PARTICLES
 // ═══════════════════════════════════════════════
 (function() {
   const canvas = document.getElementById('particles-canvas');
   const ctx = canvas.getContext('2d');
   let particles = [];
-  const PARTICLE_COUNT = 60;
-  const MAX_DIST = 140;
-
-  function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-  }
-  window.addEventListener('resize', resize);
-  resize();
-
-  for (let i = 0; i < PARTICLE_COUNT; i++) {
-    particles.push({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      vx: (Math.random() - 0.5) * 0.4,
-      vy: (Math.random() - 0.5) * 0.4,
-      r: Math.random() * 1.5 + 0.5,
-      a: Math.random() * 0.3 + 0.1
-    });
-  }
-
-  function animate() {
+  const N = 50, DIST = 140;
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  window.addEventListener('resize', resize); resize();
+  for (let i = 0; i < N; i++) particles.push({ x: Math.random()*canvas.width, y: Math.random()*canvas.height, vx: (Math.random()-0.5)*0.4, vy: (Math.random()-0.5)*0.4, r: Math.random()*1.5+0.5, a: Math.random()*0.3+0.1 });
+  function anim() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     for (let i = 0; i < particles.length; i++) {
-      const p = particles[i];
-      p.x += p.vx; p.y += p.vy;
-      if (p.x < 0) p.x = canvas.width;
-      if (p.x > canvas.width) p.x = 0;
-      if (p.y < 0) p.y = canvas.height;
-      if (p.y > canvas.height) p.y = 0;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(0, 229, 255, ${p.a})`;
-      ctx.fill();
-      for (let j = i + 1; j < particles.length; j++) {
-        const q = particles[j];
-        const dx = p.x - q.x, dy = p.y - q.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
-        if (dist < MAX_DIST) {
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          ctx.lineTo(q.x, q.y);
-          ctx.strokeStyle = `rgba(0, 229, 255, ${0.06 * (1 - dist/MAX_DIST)})`;
-          ctx.stroke();
-        }
-      }
+      const p = particles[i]; p.x += p.vx; p.y += p.vy;
+      if (p.x < 0) p.x = canvas.width; if (p.x > canvas.width) p.x = 0;
+      if (p.y < 0) p.y = canvas.height; if (p.y > canvas.height) p.y = 0;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fillStyle = `rgba(0,229,255,${p.a})`; ctx.fill();
+      for (let j = i+1; j < particles.length; j++) { const q = particles[j]; const d = Math.hypot(p.x-q.x, p.y-q.y); if (d < DIST) { ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.strokeStyle = `rgba(0,229,255,${0.06*(1-d/DIST)})`; ctx.stroke(); } }
     }
-    requestAnimationFrame(animate);
+    requestAnimationFrame(anim);
   }
-  animate();
+  anim();
 })();
 
 // ═══════════════════════════════════════════════
-// TAB SWITCHING
+// TABS
 // ═══════════════════════════════════════════════
 const tabBtns = document.querySelectorAll('.tab-btn');
 const tabContents = document.querySelectorAll('.tab-content');
 let activeTab = 'live';
-
-tabBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    const tab = btn.dataset.tab;
-    if (tab === activeTab) return;
-    activeTab = tab;
-    tabBtns.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    tabContents.forEach(c => c.classList.remove('active'));
-    document.getElementById('tab-' + tab).classList.add('active');
-    // Load data for the tab on switch
-    if (tab === 'findings') loadFindings();
-    if (tab === 'report') loadReport();
-    if (tab === 'timeline') loadTimeline();
-    if (tab === 'agentlog') loadAgentLog();
-  });
-});
+tabBtns.forEach(btn => btn.addEventListener('click', () => {
+  const tab = btn.dataset.tab; if (tab === activeTab) return; activeTab = tab;
+  tabBtns.forEach(b => b.classList.remove('active')); btn.classList.add('active');
+  tabContents.forEach(c => c.classList.remove('active')); document.getElementById('tab-'+tab).classList.add('active');
+  if (tab === 'findings') loadFindings(); if (tab === 'report') loadReport();
+  if (tab === 'timeline') loadTimeline(); if (tab === 'agentlog') loadAgentLog();
+}));
 
 // ═══════════════════════════════════════════════
-// LIVE MONITOR (Tab 1) — from progress.json
+// PHASE DEFINITIONS
 // ═══════════════════════════════════════════════
-const TOOL_LABELS = {
-  initial_access: 'Initial Access Vector',
-  lateral_movement: 'Lateral Movement',
-  exfiltration: 'Data Exfiltration',
-  payload_delivery: 'Payload Delivery',
-  timeline: 'Timeline Synthesis',
+const PHASES = [
+  { id: 'phase1', num: 1, name: 'Alert Ingestion', desc: 'Streaming Suricata EVE alerts, extracting IOC IPs and community IDs, categorizing by threat type' },
+  { id: 'phase2', num: 2, name: 'Zeek Correlation', desc: 'Scanning 30GB Zeek JSON, filtering records matching alert IOCs via reservoir sampling' },
+  { id: 'phase3', num: 3, name: 'PCAP Targeting', desc: 'Building time-range index with capinfos, selecting targeted PCAP subset for deep analysis' },
+  { id: 'phase4', num: 4, name: 'Deep PCAP Analysis', desc: 'Running tshark with protocol-specific filters: DNS, HTTP, TLS, SMB, RDP extraction' },
+  { id: 'phase5', num: 5, name: 'Database Loading', desc: 'Loading artifacts into SQLite forensic database (13 tables with indexes)' },
+  { id: 'phase6', num: 6, name: 'LLM Agent Investigation', desc: 'Autonomous worker agents query the database with SQL to investigate each forensic question' },
+  { id: 'phase7', num: 7, name: 'Timeline Assembly', desc: 'Building chronological event timeline from all agent findings' },
+  { id: 'phase8', num: 8, name: 'Report Synthesis', desc: 'LLM synthesizer generating C-suite executive report from all findings' },
+];
+
+const WORKER_INFO = {
+  A: { title: 'Initial Access', mitre: 'T1133', color: '#ff3d00' },
+  B: { title: 'Lateral Movement', mitre: 'T1046/T1021.002', color: '#ffb300' },
+  C: { title: 'Exfiltration', mitre: 'T1567', color: '#b388ff' },
+  D: { title: 'Payload Delivery', mitre: 'T1021.001/T1570', color: '#2979ff' },
 };
-const ALL_TOOLS = ['initial_access', 'lateral_movement', 'exfiltration', 'payload_delivery'];
 
-function fmt(iso) {
-  if (!iso) return '---';
-  try {
-    const d = new Date(iso + 'Z');
-    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
-  } catch { return iso; }
+// ═══════════════════════════════════════════════
+// DETERMINE PHASE STATE FROM progress.json
+// ═══════════════════════════════════════════════
+function getPhaseStates(d) {
+  const stage = d.stage || 'waiting';
+  const pp = d.pcap_progress || {};
+  const phaseDone = pp.done || 0;
+
+  // Map stage to phase completion
+  const states = {};
+
+  // Phases 1-4 are sub-phases of "preprocessing" tracked by pcap_progress.done (1-4)
+  for (let i = 1; i <= 4; i++) {
+    if (stage === 'preprocessing') {
+      if (phaseDone > i) states[i] = 'done';
+      else if (phaseDone === i) states[i] = pp.current && pp.current.includes('done') ? 'done' : 'active';
+      else if (phaseDone === i - 1) states[i] = 'active';
+      else states[i] = 'pending';
+    } else if (stage === 'starting') {
+      states[i] = i === 1 ? 'active' : 'pending';
+    } else {
+      states[i] = 'done'; // past preprocessing
+    }
+  }
+
+  // Phase 5: loading_database
+  if (stage === 'loading_database') states[5] = 'active';
+  else if (['multi_agent','analyzing','synthesizing','reporting','complete'].includes(stage)) states[5] = 'done';
+  else states[5] = 'pending';
+
+  // Phase 6: multi_agent / analyzing
+  if (stage === 'multi_agent' || stage === 'analyzing') states[6] = 'active';
+  else if (['synthesizing','reporting','complete'].includes(stage)) states[6] = 'done';
+  else states[6] = 'pending';
+
+  // Phase 7: timeline (part of reporting/complete)
+  if (stage === 'synthesizing') states[7] = 'done';
+  else if (stage === 'reporting') states[7] = 'active';
+  else if (stage === 'complete') states[7] = 'done';
+  else states[7] = 'pending';
+
+  // Phase 8: report synthesis
+  if (stage === 'synthesizing') states[8] = 'active';
+  else if (stage === 'complete') states[8] = 'done';
+  else states[8] = 'pending';
+
+  return states;
 }
+
+function getPhaseDetail(phaseNum, d) {
+  const stage = d.stage || 'waiting';
+  const pp = d.pcap_progress || {};
+
+  switch (phaseNum) {
+    case 1: {
+      const segs = d.alert_results || [];
+      if (!segs.length) return { status: '', chips: [] };
+      const total = segs.reduce((s, c) => s + parseInt((c.segment.match(/[\d,]+/) || ['0'])[0].replace(/,/g,''), 10), 0);
+      return { status: `${total.toLocaleString()} alerts loaded across ${segs.length} categories`, chips: segs };
+    }
+    case 2: {
+      const segs = d.zeek_results || [];
+      if (!segs.length) return { status: pp.current || '', chips: [] };
+      const total = segs.reduce((s, c) => s + parseInt((c.segment.match(/[\d,]+/) || ['0'])[0].replace(/,/g,''), 10), 0);
+      return { status: `${total.toLocaleString()} records matched across ${segs.length} protocols`, chips: segs };
+    }
+    case 3: {
+      const segs = d.pcap_index_results || [];
+      return { status: segs.map(s => s.segment).join(' | ') || '', chips: segs };
+    }
+    case 4: {
+      const segs = d.tshark_results || [];
+      const count = segs.length;
+      return { status: count ? `${count} PCAPs analyzed with tshark` : (pp.current || ''), chips: count > 10 ? [{segment: `${count} PCAPs processed`, status: 'ok'}] : segs };
+    }
+    case 5: {
+      if (stage === 'loading_database') return { status: 'Parsing artifacts JSON and inserting into SQLite...', chips: [], showBar: true };
+      if (['multi_agent','analyzing','synthesizing','reporting','complete'].includes(stage)) return { status: 'All tables loaded', chips: [] };
+      return { status: '', chips: [] };
+    }
+    case 6: {
+      return { status: '', chips: [], showWorkers: true };
+    }
+    case 7: {
+      return { status: stage === 'complete' ? 'Timeline assembled' : '', chips: [] };
+    }
+    case 8: {
+      if (stage === 'synthesizing') return { status: 'LLM synthesizer generating executive report...', chips: [] };
+      if (stage === 'complete') return { status: 'Report generated', chips: [] };
+      return { status: '', chips: [] };
+    }
+  }
+  return { status: '', chips: [] };
+}
+
+// ═══════════════════════════════════════════════
+// RENDER LIVE MONITOR
+// ═══════════════════════════════════════════════
+let startedAtISO = null;
 
 function renderLive(d) {
   document.getElementById('waiting').style.display = 'none';
   document.getElementById('app-root').style.display = 'block';
 
   document.getElementById('case-id').textContent = (d.case_id || '---').toUpperCase();
-  document.getElementById('started-at').textContent = 'SYS_START: ' + fmt(d.started_at);
-  document.getElementById('updated-at').textContent = 'LAST_SYNC: ' + fmt(d.updated_at);
+  document.getElementById('started-at').textContent = 'START: ' + fmt(d.started_at);
+  document.getElementById('updated-at').textContent = 'SYNC: ' + fmt(d.updated_at);
+  startedAtISO = d.started_at;
 
   const stage = d.stage || 'waiting';
   const badge = document.getElementById('stage-badge');
-  badge.textContent = stage;
+  const stageLabels = {
+    starting: 'STARTING', preprocessing: 'PREPROCESSING', loading_database: 'LOADING DATABASE',
+    multi_agent: 'AGENTS RUNNING', analyzing: 'ANALYZING', synthesizing: 'SYNTHESIZING REPORT',
+    reporting: 'BUILDING TIMELINE', complete: 'COMPLETE', waiting: 'WAITING'
+  };
+  badge.textContent = stageLabels[stage] || stage;
   badge.className = 'badge badge-' + stage;
 
-  // PCAP progress
-  const pp = d.pcap_progress || {};
-  const done = pp.done || 0, total = pp.total || 0;
-  const pct = total > 0 ? Math.round(done / total * 100) : ((stage !== 'preprocessing' && stage !== 'starting') ? 100 : 0);
-  const pcapBar = document.getElementById('pcap-bar');
-  pcapBar.style.width = pct + '%';
-  pcapBar.classList.toggle('active', stage === 'preprocessing' || stage === 'analyzing');
+  // Phase pipeline
+  const phaseStates = getPhaseStates(d);
+  const container = document.getElementById('phase-pipeline');
+  let html = '';
 
-  let subLabel = '';
-  let phasePrefix = '';
-  if (stage === 'preprocessing') {
-    if (pp.phase === 'capinfos') phasePrefix = '[CAPINFOS] ';
-    if (pp.phase === 'zeek') phasePrefix = '[ZEEK] ';
-    if (pp.phase === 'tshark') phasePrefix = '[TSHARK] ';
-  }
-  const label = total > 0 ? `${done} / ${total} FILES (${pct}%)` : ((stage !== 'preprocessing' && stage !== 'starting') ? 'SYSTEM COMPLETE' : 'INITIALIZING PRE-SCAN');
-  if (pp.current && stage === 'preprocessing') subLabel = phasePrefix + pp.current.split('/').pop();
-  document.getElementById('pcap-label').textContent = label;
-  document.getElementById('pcap-sublabel').textContent = subLabel;
+  PHASES.forEach((phase, idx) => {
+    const st = phaseStates[phase.num];
+    const dotCls = st === 'done' ? 'done' : st === 'active' ? 'active' : '';
+    const connCls = st === 'done' ? 'done' : st === 'active' ? 'active' : '';
+    const cardCls = st === 'active' ? 'active' : st === 'done' ? 'done' : '';
+    const nameCls = st === 'pending' ? 'dim' : '';
+    const detail = getPhaseDetail(phase.num, d);
+    const icon = st === 'done' ? '&#10003;' : st === 'active' ? '&#9679;' : phase.num;
 
-  // Pipeline
-  const completed = d.completed_tools || [];
-  const pipeline = document.getElementById('pipeline');
-  pipeline.innerHTML = '';
-  const pipelineItems = ['preprocessing', ...ALL_TOOLS, 'timeline'];
-  pipelineItems.forEach((step, i) => {
-    if (i > 0) pipeline.innerHTML += '<span class="arrow">&rsaquo;</span>';
-    const done_step =
-      step === 'preprocessing' ? stage !== 'starting' && stage !== 'preprocessing' :
-      step === 'timeline' ? completed.includes('timeline') :
-      completed.includes(step);
-    const active_step =
-      step === 'preprocessing' ? stage === 'preprocessing' :
-      step === 'timeline' ? stage === 'reporting' || stage === 'complete' :
-      stage === 'analyzing' && !completed.includes(step) && completed.length === ALL_TOOLS.indexOf(step);
-    const cls = done_step ? 'step done' : active_step ? 'step active' : 'step';
-    const icon = done_step ? '&#10003; ' : active_step ? '&#10227; ' : '&bull; ';
-    const lbl = step === 'preprocessing' ? 'Preprocessing' : (TOOL_LABELS[step] || step);
-    pipeline.innerHTML += `<span class="${cls}">${icon}${lbl}</span>`;
-  });
+    html += `<div class="phase-row">`;
+    html += `<div class="phase-line-area">`;
+    html += `  <div class="phase-dot ${dotCls}">${icon}</div>`;
+    if (idx < PHASES.length - 1) html += `  <div class="phase-connector ${connCls}"></div>`;
+    html += `</div>`;
+    html += `<div class="phase-card ${cardCls}">`;
+    html += `  <div class="phase-title-row">`;
+    html += `    <span class="phase-name ${nameCls}">Phase ${phase.num}: ${phase.name}</span>`;
+    if (st === 'active') html += `<span style="font-size:10px;color:var(--primary-cyan);animation:pulse-opacity 1.5s infinite;">RUNNING</span>`;
+    if (st === 'done') html += `<span style="font-size:10px;color:var(--success-green);">COMPLETE</span>`;
+    html += `  </div>`;
+    html += `  <div class="phase-desc">${phase.desc}</div>`;
 
-  // Findings cards
-  const grid = document.getElementById('findings-grid');
-  grid.innerHTML = '';
-  const findings = d.findings || {};
-  const qids = { initial_access: 'A', lateral_movement: 'B', exfiltration: 'C', payload_delivery: 'D' };
-  ALL_TOOLS.forEach(tool => {
-    const qid = qids[tool];
-    const f = findings[qid];
-    if (f) {
-      // Extract model/backend info from tool_name field
-      const modelInfo = f.model || '';
-      const modelMatch = modelInfo.match(/\[(.+?)\/(.+?)\]/);
-      const backendName = modelMatch ? modelMatch[1].toUpperCase() : '';
-      const modelName = modelMatch ? modelMatch[2] : '';
-      const isError = f.status === 'agent_error';
-
-      // Check for failed backend attempts in limitations
-      const failedBackends = (f.limitations || []).filter(l => l.startsWith('Backends tried'));
-      const otherLimitations = (f.limitations || []).filter(l => !l.startsWith('Backends tried'));
-
-      grid.innerHTML += `
-        <div class="finding-card ${f.confidence === 'HIGH' ? 'done' : ''}">
-          <div class="finding-header">
-            <span class="finding-qid">PHASE ${qid}</span>
-            <span class="badge badge-${f.confidence}">CONFIDENCE: ${f.confidence}</span>
-          </div>
-          <div class="finding-title">${esc(f.title)}</div>
-          ${modelInfo ? `<div class="finding-model ${isError ? 'error' : ''}">${isError ? 'FAILED' : 'MODEL'}: ${backendName ? backendName + ' / ' + modelName : esc(modelInfo)}</div>` : ''}
-          ${failedBackends.length ? `<div class="finding-failures"><span class="fail-label">FALLBACK LOG:</span> ${esc(failedBackends[0].replace('Backends tried before success: ', ''))}</div>` : ''}
-          <div class="finding-summary">${esc(f.summary)}</div>
-          <div class="finding-evidence">EVIDENCE FOUND: ${f.evidence_count} &bull; ${esc(f.status)}</div>
-        </div>`;
-    } else {
-      grid.innerHTML += `
-        <div class="finding-card">
-          <div class="finding-header"><span class="finding-qid">PHASE ${qid}</span></div>
-          <div class="finding-title">${TOOL_LABELS[tool]}</div>
-          <div class="finding-pending">Awaiting analysis context\u2026</div>
-        </div>`;
+    if (detail.status) {
+      const stCls = st === 'done' ? 'done' : '';
+      html += `<div class="phase-status-text ${stCls}">${esc(detail.status)}</div>`;
     }
+
+    if (detail.chips && detail.chips.length) {
+      html += `<div class="phase-chips">`;
+      detail.chips.forEach(c => {
+        html += `<span class="chip ${c.status === 'ok' ? 'ok' : c.status === 'error' ? 'error' : ''}">${esc(c.segment)}</span>`;
+      });
+      html += `</div>`;
+    }
+
+    if (detail.showBar) {
+      html += `<div class="db-bar-wrap"><div class="db-bar-fill shimmer" style="width:60%"></div></div>`;
+      html += `<div style="font-size:10px;font-family:var(--font-mono);color:var(--text-dim);margin-top:4px;">Inserting ~3M rows into 13 tables...</div>`;
+    }
+
+    if (detail.showWorkers) {
+      html += renderWorkerCards(d);
+    }
+
+    html += `</div></div>`;
   });
 
-  // Ingest phase segments — all 4 phases tracked independently
-  const renderSegs = (segs, el) => {
-    el.innerHTML = '';
-    (segs || []).forEach(s => {
-      el.innerHTML += `<span class="seg-chip ${s.status}">${esc(s.segment)}</span>`;
-    });
-    if (!(segs || []).length) el.innerHTML = '<span style="color:var(--text-muted);font-size:12px;font-family:var(--font-mono)">Waiting...</span>';
-  };
-  renderSegs(d.alert_results, document.getElementById('alert-segs'));
-  renderSegs(d.zeek_results, document.getElementById('zeek-segs'));
-  renderSegs(d.pcap_index_results, document.getElementById('pcap-index-segs'));
-  renderSegs(d.tshark_results, document.getElementById('tshark-segs'));
+  container.innerHTML = html;
 
   // LLM Activity Log
   const llmLog = d.llm_log || [];
@@ -877,73 +612,100 @@ function renderLive(d) {
   const llmContainer = document.getElementById('llm-log-container');
   if (llmLog.length) {
     llmSection.style.display = '';
-    const _c = {
-      worker_started: '#00e5ff',
-      worker_completed: '#00e676',
-      backend_failed: '#ff3d00',
-      all_backends_failed: '#ff3d00',
-      rate_limit: '#ffb300',
-      tool_call: '#b388ff',
-      worker_dispatched: '#2979ff',
-      key_rotated: '#ff9f43',
-    };
+    const _c = { worker_started: '#00e5ff', worker_completed: '#00e676', backend_failed: '#ff3d00', all_backends_failed: '#ff3d00', rate_limit: '#ffb300', tool_call: '#b388ff', worker_dispatched: '#2979ff', key_rotated: '#ff9f43' };
     llmContainer.innerHTML = llmLog.map(e => {
       const evt = e.event_type || '';
       const color = _c[evt] || '#8a9bb2';
       const qid = e.question_id || '';
       let detail = '';
-      if (evt === 'worker_started') {
-        detail = `<span style="color:#00e5ff">STARTING</span> Worker ${qid} &mdash; <b>${esc(e.backend || '')}</b> model=<b>${esc(e.model || '')}</b> api_key=<b>${esc(e.api_key || '')}</b>` + (e.is_fallback ? ' <span style="color:#ffb300">[FALLBACK]</span>' : '');
-      } else if (evt === 'worker_completed') {
-        detail = `<span style="color:#00e676">COMPLETED</span> Worker ${qid} &mdash; <b>${esc(e.backend || '')}</b> api_key=<b>${esc(e.api_key || '')}</b> iterations=${e.iterations || '?'} finding=${e.has_finding ? 'YES' : 'NO'}`;
-        if (e.failed_backends && e.failed_backends.length) detail += ` <span style="color:#ff6b6b">(failed: ${esc(e.failed_backends.join(', '))})</span>`;
-      } else if (evt === 'backend_failed') {
-        detail = `<span style="color:#ff3d00">FAILED</span> Worker ${qid} &mdash; <b>${esc(e.backend || '')}</b>: ${esc(e.error || '')}`;
-        if (e.remaining_backends && e.remaining_backends.length) detail += ` <span style="color:#8a9bb2">(${e.remaining_backends.length} remaining)</span>`;
-      } else if (evt === 'all_backends_failed') {
-        detail = `<span style="color:#ff3d00;font-weight:700">ALL BACKENDS FAILED</span> Worker ${qid}`;
-      } else if (evt === 'rate_limit') {
-        detail = `<span style="color:#ffb300">RATE LIMITED</span> Worker ${qid} &mdash; attempt ${e.attempt || '?'}, backoff ${e.backoff_seconds || '?'}s`;
-      } else if (evt === 'tool_call') {
-        const args = e.args || {};
-        const argStr = args.sql ? esc(args.sql).substring(0, 80) : JSON.stringify(args).substring(0, 60);
-        detail = `<span style="color:#b388ff">TOOL</span> Worker ${qid} [iter ${e.iteration || '?'}] ${esc(e.tool || '')}(${argStr})`;
-      } else if (evt === 'key_rotated') {
-        detail = `<span style="color:#ff9f43;font-weight:700">KEY ROTATED</span> Worker ${qid} [iter ${e.iteration || '?'}] &mdash; ${esc(e.old_key || '')} &rarr; ${esc(e.new_key || '')} <span style="color:#00e676">(context preserved)</span>`;
-      } else if (evt === 'worker_dispatched') {
-        detail = `<span style="color:#2979ff">DISPATCHED</span> Worker ${qid}: ${esc(e.title || '')}`;
-      } else {
-        detail = `${evt}: ${JSON.stringify(e).substring(0, 120)}`;
-      }
+      if (evt === 'worker_started') detail = `<span style="color:#00e5ff">START</span> Worker ${qid} [${esc(e.backend||'')}/${esc(e.model||'')}]` + (e.is_fallback ? ' <span style="color:#ffb300">[FALLBACK]</span>' : '');
+      else if (evt === 'worker_completed') detail = `<span style="color:#00e676">DONE</span> Worker ${qid} [${e.iterations||'?'} iters] finding=${e.has_finding?'YES':'NO'}`;
+      else if (evt === 'backend_failed') detail = `<span style="color:#ff3d00">FAIL</span> Worker ${qid} [${esc(e.backend||'')}]: ${esc((e.error||'').substring(0,100))}`;
+      else if (evt === 'tool_call') { const sql = (e.args||{}).sql||''; detail = `<span style="color:#b388ff">SQL</span> Worker ${qid} [iter ${e.iteration||'?'}] ${esc(sql.substring(0,120))}`; }
+      else if (evt === 'rate_limit') detail = `<span style="color:#ffb300">RATE_LIMIT</span> Worker ${qid} backoff=${e.backoff_seconds||'?'}s`;
+      else if (evt === 'worker_dispatched') detail = `<span style="color:#2979ff">DISPATCH</span> Worker ${qid}: ${esc(e.title||'')}`;
+      else detail = `${evt}: ${JSON.stringify(e).substring(0, 120)}`;
       return `<div style="border-left:3px solid ${color};padding:2px 8px;margin:2px 0;background:rgba(255,255,255,0.02);">${detail}</div>`;
     }).join('');
-    // Auto-scroll to bottom
     llmContainer.scrollTop = llmContainer.scrollHeight;
   } else {
     llmSection.style.display = 'none';
   }
+}
 
-  // Live timeline
-  const tl = d.timeline;
-  const tlSection = document.getElementById('live-timeline-section');
-  if (tl && tl.length) {
-    tlSection.style.display = '';
-    const list = document.getElementById('live-timeline-list');
-    list.innerHTML = tl.slice(0, 50).map(e =>
-      `<li>
-        <span class="tl-ts">[${esc((e.ts || '').substring(0, 19))}]</span>
-        <span class="badge badge-${e.category || ''}" style="font-size:10px;padding:2px 8px;">${esc(e.title || '')}</span>
-        <span style="color:#b0c0d0;margin-left:8px;">${esc(e.summary || '')}</span>
-      </li>`
-    ).join('');
-    if (tl.length > 50) list.innerHTML += `<li style="color:var(--text-muted);font-size:12px;margin-top:12px">// +${tl.length - 50} more events</li>`;
-  } else {
-    tlSection.style.display = 'none';
-  }
+function renderWorkerCards(d) {
+  const findings = d.findings || {};
+  const llmLog = d.llm_log || [];
+  const stage = d.stage || '';
+
+  let html = '<div class="worker-grid">';
+  ['A','B','C','D'].forEach(qid => {
+    const f = findings[qid];
+    const info = WORKER_INFO[qid];
+
+    // Determine worker state
+    const dispatched = llmLog.some(e => e.event_type === 'worker_dispatched' && e.question_id === qid);
+    const started = llmLog.some(e => e.event_type === 'worker_started' && e.question_id === qid);
+    const completed = llmLog.some(e => e.event_type === 'worker_completed' && e.question_id === qid);
+    const isRunning = started && !completed;
+    const isDone = completed || !!f;
+    const isError = f && f.status === 'agent_error';
+
+    const cardCls = isDone ? (isError ? 'error' : 'done') : isRunning ? 'running' : '';
+
+    // Count iterations for this worker
+    const toolCalls = llmLog.filter(e => e.event_type === 'tool_call' && e.question_id === qid);
+    const maxIter = toolCalls.length ? Math.max(...toolCalls.map(e => e.iteration || 0)) : 0;
+    const lastQuery = toolCalls.length ? (toolCalls[toolCalls.length-1].args || {}).sql || '' : '';
+
+    html += `<div class="worker-card ${cardCls}">`;
+    html += `<div class="worker-header">`;
+    html += `  <span class="worker-letter" style="color:${isDone ? (isError ? 'var(--error-red)' : 'var(--success-green)') : isRunning ? info.color : ''}">${qid}</span>`;
+    html += `  <div><div class="worker-title">${info.title}</div><div class="worker-subtitle">MITRE ${info.mitre}</div></div>`;
+    if (f) html += `<span class="badge badge-${f.confidence||''}" style="margin-left:auto;font-size:9px;">${f.confidence||''}</span>`;
+    html += `</div>`;
+
+    if (isRunning || isDone) {
+      const pct = isDone ? 100 : Math.min(100, (maxIter / 20) * 100);
+      html += `<div class="worker-progress">`;
+      html += `  <div class="worker-iter">Iteration ${maxIter} / 20 &mdash; ${toolCalls.length} SQL queries</div>`;
+      html += `  <div class="worker-iter-bar"><div class="worker-iter-fill" style="width:${pct}%"></div></div>`;
+      html += `</div>`;
+      if (lastQuery && isRunning) html += `<div class="worker-last-query">${esc(lastQuery.substring(0, 120))}</div>`;
+    }
+
+    if (f && f.summary) {
+      html += `<div class="worker-finding-preview">${esc(f.summary.substring(0, 150))}${f.summary.length > 150 ? '...' : ''}</div>`;
+      html += `<div style="margin-top:6px;font-size:10px;font-family:var(--font-mono);color:var(--text-muted);">${f.evidence_count || 0} evidence items</div>`;
+    }
+
+    if (!dispatched && !started && !isDone) {
+      html += `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;font-style:italic;">Queued...</div>`;
+    }
+
+    html += `</div>`;
+  });
+  html += '</div>';
+  return html;
 }
 
 // ═══════════════════════════════════════════════
-// TAB 2: FINDINGS — from findings.json
+// ELAPSED TIMER
+// ═══════════════════════════════════════════════
+setInterval(() => {
+  if (!startedAtISO) return;
+  const el = document.getElementById('elapsed-timer');
+  const start = new Date(startedAtISO + 'Z');
+  const now = new Date();
+  const diff = Math.floor((now - start) / 1000);
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  const s = diff % 60;
+  el.innerHTML = `ELAPSED <span class="num">${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s</span>`;
+}, 1000);
+
+// ═══════════════════════════════════════════════
+// TAB 2: FINDINGS
 // ═══════════════════════════════════════════════
 const QUESTION_MAP = {
   A: 'What was the initial access vector used by the attacker?',
@@ -958,343 +720,150 @@ async function loadFindings() {
   try {
     const res = await fetch('findings.json?_=' + Date.now());
     if (!res.ok) throw new Error('not found');
-    const data = await res.json();
-    findingsCache = data;
-    renderFindingsFull(data);
-  } catch {
-    if (!findingsCache) {
-      container.innerHTML = `<div class="findings-empty"><div class="empty-icon">&#128269;</div>No findings data available yet.<br>Run the agent to generate findings.</div>`;
-    }
-  }
+    findingsCache = await res.json();
+    renderFindingsFull(findingsCache);
+  } catch { if (!findingsCache) container.innerHTML = `<div class="findings-empty">No findings data available yet.</div>`; }
 }
 
 function renderFindingsFull(data) {
   const container = document.getElementById('findings-full-container');
-  // data can be { questions: { A: {...}, B: {...} } } or { A: {...}, B: {...} }
   const questions = data.questions || data;
-  const letters = ['A', 'B', 'C', 'D'];
-  let count = 0;
-  let html = '';
-
-  letters.forEach(letter => {
+  let count = 0, html = '';
+  ['A','B','C','D'].forEach(letter => {
     const f = questions[letter];
-    if (!f) {
-      html += `
-        <div class="finding-full-card">
-          <div class="finding-full-header">
-            <div class="fq-letter">${letter}</div>
-            <div class="fq-info">
-              <div class="fq-title">Pending Analysis</div>
-              <div class="fq-question">${QUESTION_MAP[letter] || ''}</div>
-            </div>
-          </div>
-        </div>`;
-      return;
-    }
+    if (!f) { html += `<div class="finding-full-card"><div class="finding-full-header"><div class="fq-letter">${letter}</div><div class="fq-info"><div class="fq-title">Pending</div><div class="fq-question">${QUESTION_MAP[letter]||''}</div></div></div></div>`; return; }
     count++;
-
-    // Evidence rows
     const evidence = f.evidence || [];
     let evidenceHTML = '';
     if (evidence.length) {
-      evidenceHTML = `
-        <div class="fq-section-title">Evidence</div>
-        <table class="evidence-table">
-          <thead><tr><th>Source</th><th>Detail</th><th>Timestamp</th></tr></thead>
-          <tbody>
-            ${evidence.map(e => `<tr>
-              <td>${esc(e.source || e.type || '---')}</td>
-              <td>${esc(e.detail || e.description || e.value || '---')}</td>
-              <td>${esc(e.timestamp || e.ts || '---')}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>`;
+      evidenceHTML = `<div class="fq-section-title">Evidence</div><table class="evidence-table"><thead><tr><th>Source</th><th>Detail</th><th>Timestamp</th></tr></thead><tbody>${evidence.map(e => `<tr><td>${esc(e.source||e.type||'---')}</td><td>${esc(e.detail||e.description||e.value||'---')}</td><td>${esc(e.timestamp||e.ts||'---')}</td></tr>`).join('')}</tbody></table>`;
     }
-
-    // MITRE techniques
     const techniques = f.mitre_techniques || f.techniques || [];
-    let mitreHTML = '';
-    if (techniques.length) {
-      mitreHTML = `<div class="fq-section-title">MITRE ATT&CK Techniques</div><div style="margin-top:6px;">${techniques.map(t => {
-        const label = typeof t === 'string' ? t : `${t.id || ''} ${t.name || ''}`;
-        return `<span class="fq-mitre-chip">${esc(label)}</span>`;
-      }).join('')}</div>`;
-    }
-
-    // Limitations
+    let mitreHTML = techniques.length ? `<div class="fq-section-title">MITRE ATT&CK</div><div style="margin-top:6px;">${techniques.map(t => `<span class="fq-mitre-chip">${esc(typeof t==='string'?t:`${t.id||''} ${t.name||''}`)}</span>`).join('')}</div>` : '';
     const limitations = f.limitations || [];
-    let limHTML = '';
-    if (limitations.length) {
-      limHTML = `<div class="fq-section-title">Limitations</div><ul class="fq-limitations">${limitations.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
-    }
-
-    // Next steps
+    let limHTML = limitations.length ? `<div class="fq-section-title">Limitations</div><ul class="fq-limitations">${limitations.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>` : '';
     const nextSteps = f.next_steps || f.recommendations || [];
-    let nsHTML = '';
-    if (nextSteps.length) {
-      nsHTML = `<div class="fq-section-title">Next Steps</div><ul class="fq-next-steps">${nextSteps.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`;
-    }
-
-    const confBadge = f.confidence ? `<span class="badge badge-${f.confidence}" style="margin-left:auto;">${f.confidence}</span>` : '';
-
-    html += `
-      <div class="finding-full-card">
-        <div class="finding-full-header" onclick="this.parentElement.classList.toggle('open')">
-          <div class="fq-letter">${letter}</div>
-          <div class="fq-info">
-            <div class="fq-title">${esc(f.title || 'Finding ' + letter)}</div>
-            <div class="fq-question">${QUESTION_MAP[letter] || ''}</div>
-          </div>
-          ${confBadge}
-          <div class="fq-chevron">&#9660;</div>
-        </div>
-        <div class="fq-body">
-          <div class="fq-body-inner">
-            <div class="fq-section-title">Summary</div>
-            <div class="fq-summary-text">${esc(f.summary || f.answer || '---')}</div>
-            ${mitreHTML}
-            ${evidenceHTML}
-            ${limHTML}
-            ${nsHTML}
-          </div>
-        </div>
-      </div>`;
+    let nsHTML = nextSteps.length ? `<div class="fq-section-title">Next Steps</div><ul class="fq-next-steps">${nextSteps.map(n=>`<li>${esc(n)}</li>`).join('')}</ul>` : '';
+    html += `<div class="finding-full-card"><div class="finding-full-header" onclick="this.parentElement.classList.toggle('open')"><div class="fq-letter">${letter}</div><div class="fq-info"><div class="fq-title">${esc(f.title||'Finding '+letter)}</div><div class="fq-question">${QUESTION_MAP[letter]||''}</div></div>${f.confidence?`<span class="badge badge-${f.confidence}" style="margin-left:auto;">${f.confidence}</span>`:''}<div class="fq-chevron">&#9660;</div></div><div class="fq-body"><div class="fq-body-inner"><div class="fq-section-title">Summary</div><div class="fq-summary-text">${esc(f.summary||f.answer||'---')}</div>${mitreHTML}${evidenceHTML}${limHTML}${nsHTML}</div></div></div>`;
   });
-
   container.innerHTML = html;
-
-  // Update notification badge
   const badge = document.getElementById('findings-count');
-  if (count > 0) { badge.style.display = ''; badge.textContent = count; }
-  else { badge.style.display = 'none'; }
+  if (count > 0) { badge.style.display = ''; badge.textContent = count; } else badge.style.display = 'none';
 }
 
 // ═══════════════════════════════════════════════
-// TAB 3: REPORT — from report.md
+// TAB 3: REPORT
 // ═══════════════════════════════════════════════
 let reportCache = null;
 async function loadReport() {
   const container = document.getElementById('report-full-container');
   try {
-    const res = await fetch('report.md?_=' + Date.now());
+    const res = await fetch('report.md?_='+Date.now());
     if (!res.ok) throw new Error('not found');
-    const md = await res.text();
-    reportCache = md;
-    container.innerHTML = `<div class="report-container">${renderMarkdown(md)}</div>`;
-  } catch {
-    if (!reportCache) {
-      container.innerHTML = `<div class="report-empty"><div class="empty-icon">&#128196;</div>No report available yet.<br>Run the agent to generate the report.</div>`;
-    }
-  }
+    reportCache = await res.text();
+    container.innerHTML = `<div class="report-container">${renderMarkdown(reportCache)}</div>`;
+  } catch { if (!reportCache) container.innerHTML = `<div class="report-empty">No report available yet.</div>`; }
 }
 
-// Lightweight markdown renderer (no external deps)
 function renderMarkdown(md) {
-  let html = md;
-
-  // Code blocks (```...```)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    `<pre><code>${esc(code.trimEnd())}</code></pre>`
-  );
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // Headers
-  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-  // Horizontal rules
-  html = html.replace(/^---+$/gm, '<hr>');
-
-  // Bold and italic
-  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // Blockquotes
-  html = html.replace(/^> (.+)$/gm, '<blockquote><p>$1</p></blockquote>');
-
-  // Tables
-  html = html.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/gm, (_, header, sep, body) => {
-    const ths = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
-    const rows = body.trim().split('\n').map(row => {
-      const tds = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
-      return `<tr>${tds}</tr>`;
-    }).join('');
+  let h = md;
+  h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_,l,c) => `<pre><code>${esc(c.trimEnd())}</code></pre>`);
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  h = h.replace(/^---+$/gm, '<hr>');
+  h = h.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  h = h.replace(/^> (.+)$/gm, '<blockquote><p>$1</p></blockquote>');
+  h = h.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/gm, (_, header, sep, body) => {
+    const ths = header.split('|').filter(c=>c.trim()).map(c=>`<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => `<tr>${row.split('|').filter(c=>c.trim()).map(c=>`<td>${c.trim()}</td>`).join('')}</tr>`).join('');
     return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
   });
-
-  // Unordered lists
-  html = html.replace(/^(\s*)[-*] (.+)$/gm, '<li>$2</li>');
-  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
-
-  // Paragraphs — wrap remaining loose text lines
-  html = html.replace(/^(?!<[a-z/])((?!<).+)$/gm, '<p>$1</p>');
-
-  // Clean up empty paragraphs
-  html = html.replace(/<p>\s*<\/p>/g, '');
-
-  return html;
+  h = h.replace(/^(\s*)[-*] (.+)$/gm, '<li>$2</li>');
+  h = h.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  h = h.replace(/^(?!<[a-z/])((?!<).+)$/gm, '<p>$1</p>');
+  h = h.replace(/<p>\s*<\/p>/g, '');
+  return h;
 }
 
 // ═══════════════════════════════════════════════
-// TAB 4: TIMELINE — from timeline.json
+// TAB 4: TIMELINE
 // ═══════════════════════════════════════════════
-const CAT_COLORS = {
-  initial_access: { color: '#ff3d00', label: 'Initial Access' },
-  lateral_movement: { color: '#ffb300', label: 'Lateral Movement' },
-  exfiltration: { color: '#b388ff', label: 'Exfiltration' },
-  payload_delivery: { color: '#2979ff', label: 'Payload Delivery' },
-  c2: { color: '#ff3d00', label: 'C2 Communication' },
-  reconnaissance: { color: '#ffb300', label: 'Reconnaissance' },
-};
-
+const CAT_COLORS = { initial_access:{color:'#ff3d00',label:'Initial Access'}, lateral_movement:{color:'#ffb300',label:'Lateral Movement'}, exfiltration:{color:'#b388ff',label:'Exfiltration'}, payload_delivery:{color:'#2979ff',label:'Payload Delivery'}, c2:{color:'#ff3d00',label:'C2'}, reconnaissance:{color:'#ffb300',label:'Recon'} };
 let timelineCache = null;
 async function loadTimeline() {
   const container = document.getElementById('timeline-full-container');
   try {
-    const res = await fetch('timeline.json?_=' + Date.now());
+    const res = await fetch('timeline.json?_='+Date.now());
     if (!res.ok) throw new Error('not found');
-    const data = await res.json();
-    timelineCache = data;
-    renderTimelineFull(data);
-  } catch {
-    if (!timelineCache) {
-      container.innerHTML = `<div class="timeline-empty"><div class="empty-icon">&#9202;</div>No timeline data available yet.<br>Run the agent to generate the timeline.</div>`;
-    }
-  }
+    timelineCache = await res.json();
+    renderTimelineFull(timelineCache);
+  } catch { if (!timelineCache) container.innerHTML = `<div class="timeline-empty">No timeline data yet.</div>`; }
 }
-
 function renderTimelineFull(data) {
   const container = document.getElementById('timeline-full-container');
   const events = Array.isArray(data) ? data : (data.events || []);
-
-  if (!events.length) {
-    container.innerHTML = `<div class="timeline-empty"><div class="empty-icon">&#9202;</div>Timeline is empty.</div>`;
-    return;
-  }
-
-  // Legend
-  const cats = [...new Set(events.map(e => e.category || 'default'))];
-  let legendHTML = '<div class="timeline-legend">';
-  cats.forEach(cat => {
-    const info = CAT_COLORS[cat] || { color: '#8a9bb2', label: cat };
-    legendHTML += `<div class="legend-item"><div class="legend-dot" style="background:${info.color}"></div>${info.label}</div>`;
-  });
-  legendHTML += '</div>';
-
-  // Events
-  let eventsHTML = '<div class="timeline-vertical">';
+  if (!events.length) { container.innerHTML = `<div class="timeline-empty">Timeline is empty.</div>`; return; }
+  const cats = [...new Set(events.map(e=>e.category||'default'))];
+  let html = '<div class="timeline-legend">';
+  cats.forEach(cat => { const i = CAT_COLORS[cat]||{color:'#8a9bb2',label:cat}; html += `<div class="legend-item"><div class="legend-dot" style="background:${i.color}"></div>${i.label}</div>`; });
+  html += '</div><div class="timeline-vertical">';
   events.forEach(e => {
-    const cat = e.category || 'default';
-    const catClass = CAT_COLORS[cat] ? cat : 'default';
-    eventsHTML += `
-      <div class="tl-event cat-${catClass}">
-        <div class="tl-event-time">${esc((e.timestamp || e.ts || '').substring(0, 19))}</div>
-        <div class="tl-event-title">${esc(e.title || e.event || '---')}</div>
-        <div class="tl-event-desc">${esc(e.summary || e.description || '')}</div>
-        ${cat !== 'default' ? `<span class="tl-event-cat tl-cat-${catClass}">${esc((CAT_COLORS[cat] || {label:cat}).label)}</span>` : ''}
-      </div>`;
+    const cat = e.category||'default'; const cc = CAT_COLORS[cat]?cat:'default';
+    html += `<div class="tl-event cat-${cc}"><div class="tl-event-time">${esc((e.timestamp||e.ts||'').substring(0,19))}</div><div class="tl-event-title">${esc(e.title||e.event||'---')}</div><div class="tl-event-desc">${esc(e.summary||e.description||'')}</div>${cat!=='default'?`<span class="tl-event-cat tl-cat-${cc}">${esc((CAT_COLORS[cat]||{label:cat}).label)}</span>`:''}</div>`;
   });
-  eventsHTML += '</div>';
-
-  container.innerHTML = legendHTML + eventsHTML;
+  html += '</div>';
+  container.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════
-// TAB 5: AGENT LOG — from agent_log.json
+// TAB 5: AGENT LOG
 // ═══════════════════════════════════════════════
-let agentLogCache = null;
-let logFilter = 'all';
-
+let agentLogCache = null, logFilter = 'all';
 async function loadAgentLog() {
   const container = document.getElementById('agentlog-full-container');
   try {
-    const res = await fetch('agent_log.json?_=' + Date.now());
+    const res = await fetch('agent_log.json?_='+Date.now());
     if (!res.ok) throw new Error('not found');
-    const data = await res.json();
-    agentLogCache = data;
-    renderAgentLog(data);
-  } catch {
-    if (!agentLogCache) {
-      container.innerHTML = `<div class="log-empty"><div class="empty-icon">&#128203;</div>No agent log available yet.<br>Run the agent to generate logs.</div>`;
-    }
-  }
+    agentLogCache = await res.json();
+    renderAgentLog(agentLogCache);
+  } catch { if (!agentLogCache) container.innerHTML = `<div class="log-empty">No agent log yet.</div>`; }
 }
-
 function renderAgentLog(data) {
   const container = document.getElementById('agentlog-full-container');
-  const entries = Array.isArray(data) ? data : (data.entries || data.log || []);
-
-  if (!entries.length) {
-    container.innerHTML = `<div class="log-empty"><div class="empty-icon">&#128203;</div>Agent log is empty.</div>`;
-    return;
-  }
-
-  // Determine unique types
-  const types = [...new Set(entries.map(e => e.type || 'default'))];
-
-  // Filter bar
-  let filterHTML = '<div class="log-filter-bar">';
-  filterHTML += `<button class="log-filter-btn ${logFilter === 'all' ? 'active' : ''}" onclick="setLogFilter('all')">All</button>`;
-  types.forEach(t => {
-    filterHTML += `<button class="log-filter-btn ${logFilter === t ? 'active' : ''}" onclick="setLogFilter('${t}')">${esc(t)}</button>`;
-  });
-  filterHTML += '</div>';
-
-  // Entries
-  const filtered = logFilter === 'all' ? entries : entries.filter(e => (e.type || 'default') === logFilter);
-  let entriesHTML = '';
+  const entries = Array.isArray(data)?data:(data.entries||data.log||[]);
+  if (!entries.length) { container.innerHTML = `<div class="log-empty">Agent log is empty.</div>`; return; }
+  const types = [...new Set(entries.map(e=>e.type||'default'))];
+  let html = '<div class="log-filter-bar">';
+  html += `<button class="log-filter-btn ${logFilter==='all'?'active':''}" onclick="setLogFilter('all')">All</button>`;
+  types.forEach(t => html += `<button class="log-filter-btn ${logFilter===t?'active':''}" onclick="setLogFilter('${t}')">${esc(t)}</button>`);
+  html += '</div>';
+  const filtered = logFilter === 'all' ? entries : entries.filter(e=>(e.type||'default')===logFilter);
   filtered.forEach(e => {
-    const type = e.type || 'default';
-    const typeClass = ['tool_call','tool_result','reasoning','decision','error','ingest'].includes(type) ? type : 'default';
-    const ts = e.timestamp || e.ts || '';
-    const msg = e.message || e.action || e.content || '';
-    const detail = e.detail || e.result || e.data || '';
-    const detailStr = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : String(detail);
-
-    entriesHTML += `
-      <div class="log-entry">
-        <span class="log-type-badge log-type-${typeClass}">${esc(type)}</span>
-        <div class="log-body">
-          ${ts ? `<div class="log-timestamp">${esc(ts.substring(0, 19))}</div>` : ''}
-          <div class="log-message">${esc(msg)}</div>
-          ${detailStr && detailStr !== '{}' && detailStr !== '' ? `<div class="log-detail">${esc(detailStr)}</div>` : ''}
-        </div>
-      </div>`;
+    const type = e.type||'default';
+    const tc = ['tool_call','tool_result','reasoning','decision','error','ingest'].includes(type)?type:'default';
+    const ts = e.timestamp||e.ts||''; const msg = e.message||e.action||e.content||'';
+    const detail = e.detail||e.result||e.data||''; const ds = typeof detail==='object'?JSON.stringify(detail,null,2):String(detail);
+    html += `<div class="log-entry"><span class="log-type-badge log-type-${tc}">${esc(type)}</span><div class="log-body">${ts?`<div class="log-timestamp">${esc(ts.substring(0,19))}</div>`:''}
+      <div class="log-message">${esc(msg)}</div>${ds&&ds!=='{}'&&ds!==''?`<div class="log-detail">${esc(ds)}</div>`:''}</div></div>`;
   });
-
-  container.innerHTML = filterHTML + entriesHTML;
+  container.innerHTML = html;
 }
-
-function setLogFilter(f) {
-  logFilter = f;
-  if (agentLogCache) renderAgentLog(agentLogCache);
-}
+function setLogFilter(f) { logFilter=f; if(agentLogCache) renderAgentLog(agentLogCache); }
 
 // ═══════════════════════════════════════════════
-// UTILITY
+// UTILITY & POLLING
 // ═══════════════════════════════════════════════
-function esc(s) {
-  if (!s) return '';
-  const div = document.createElement('div');
-  div.textContent = String(s);
-  return div.innerHTML;
-}
+function esc(s) { if(!s) return ''; const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
+function fmt(iso) { if(!iso) return '---'; try { const d=new Date(iso+'Z'); return d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}); } catch { return iso; } }
 
-// ═══════════════════════════════════════════════
-// POLLING
-// ═══════════════════════════════════════════════
 async function fetchProgress() {
-  try {
-    const res = await fetch('progress.json?_=' + Date.now());
-    if (res.ok) renderLive(await res.json());
-  } catch (_) {}
+  try { const res = await fetch('progress.json?_='+Date.now()); if (res.ok) renderLive(await res.json()); } catch(_) {}
 }
-
 fetchProgress();
 setInterval(fetchProgress, 2000);
 </script>

@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS zeek_dce_rpc (
     dst_ip       TEXT,
     endpoint     TEXT,
     operation    TEXT,
+    named_pipe   TEXT,
     community_id TEXT,
     session_id   TEXT
 );

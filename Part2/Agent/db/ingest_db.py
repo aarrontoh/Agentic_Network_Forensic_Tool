@@ -159,7 +159,7 @@ def load_zeek_http(conn: sqlite3.Connection, records: List[dict]) -> int:
 
 
 def load_zeek_dce_rpc(conn: sqlite3.Connection, records: List[dict]) -> int:
-    columns = ["ts", "src_ip", "dst_ip", "endpoint", "operation", "community_id", "session_id"]
+    columns = ["ts", "src_ip", "dst_ip", "endpoint", "operation", "named_pipe", "community_id", "session_id"]
     rows = []
     for rec in records:
         dce = rec.get("zeek_detail", {}).get("dce_rpc", {})
@@ -169,6 +169,7 @@ def load_zeek_dce_rpc(conn: sqlite3.Connection, records: List[dict]) -> int:
             "dst_ip": rec.get("dst_ip", ""),
             "endpoint": dce.get("endpoint", ""),
             "operation": dce.get("operation", ""),
+            "named_pipe": dce.get("named_pipe", ""),
             "community_id": rec.get("community_id", ""),
             "session_id": rec.get("session_id", ""),
         })
@@ -202,7 +203,7 @@ def load_zeek_smb(conn: sqlite3.Connection, records: List[dict]) -> int:
             "ts": rec.get("ts", ""),
             "src_ip": rec.get("src_ip", ""),
             "dst_ip": rec.get("dst_ip", ""),
-            "command": smb.get("command", ""),
+            "command": smb.get("command", "") or smb.get("action", ""),
             "path": smb.get("path", "") or smb.get("share_type", ""),
             "filename": smb.get("filename", "") or smb.get("name", ""),
             "share_type": smb.get("share_type", ""),

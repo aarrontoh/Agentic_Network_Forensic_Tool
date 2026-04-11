@@ -29,7 +29,7 @@ DATABASE TABLES:
 - zeek_dns: DNS queries (query, answers, src_ip)
 - zeek_ssl: TLS sessions (server_name/SNI, src_ip, dst_ip, dst_port, src_country, src_asn_org)
 - zeek_http: HTTP requests (host, uri, method, request_body_len, user_agent)
-- zeek_dce_rpc: DCERPC operations (endpoint, operation, src_ip, dst_ip)
+- zeek_dce_rpc: DCERPC operations (endpoint, operation, named_pipe, src_ip, dst_ip)
 - zeek_rdp: RDP sessions (cookie, result, src_ip, dst_ip)
 - zeek_smb: SMB file operations (command, path, filename, src_ip, dst_ip)
 - pcap_dns, pcap_http, pcap_tls, pcap_smb, pcap_rdp: Deep PCAP extractions
@@ -253,8 +253,9 @@ STEP 6 — CHECK FOR SECURITY TOOL DISABLING AND BACKUP BROWSING:
   - Also check pcap_smb for filenames — directory listings may reveal payload files not in Zeek (e.g., query pcap_smb WHERE filename LIKE '%.exe%' or filename LIKE '%HOW TO%')
 
 STEP 6b — CHECK FOR CREDENTIAL ACCESS (DPAPI backup key theft):
-  - Query zeek_dce_rpc WHERE operation LIKE '%bkrp%' OR operation LIKE '%BackupKey%'
-  - bkrp_BackupKey via \\pipe\\lsass from the attacker's pivot to a DC = DPAPI master key theft (T1003)
+  - Query zeek_dce_rpc WHERE operation LIKE '%bkrp%' OR operation LIKE '%BackupKey%' OR endpoint = 'BackupKey'
+  - Also check: SELECT ts, src_ip, dst_ip, operation, endpoint, named_pipe FROM zeek_dce_rpc WHERE named_pipe LIKE '%lsass%'
+  - bkrp_BackupKey via \pipe\lsass from the attacker's pivot to a DC = DPAPI master key theft (T1003)
   - This allows the attacker to decrypt all domain users' saved credentials
 
 STEP 7 — CHECK FOR PSEXEC / REMOTE EXECUTION:
