@@ -29,15 +29,15 @@ _NUM_WORKERS = int(os.getenv("PCAP_THREADS", "8"))
 
 # Max records to collect per artefact type (across all PCAPs)
 _MAX = {
-    "dns": 5_000,
-    "http": 2_000,
-    "tls": 5_000,
-    "smb": 2_000,
-    "rdp": 1_000,
+    "dns": 50_000,
+    "http": 20_000,
+    "tls": 50_000,
+    "smb": 50_000,
+    "rdp": 10_000,
 }
 
-# Max IPs to put in a tshark display filter (keep it reasonable)
-_MAX_FILTER_IPS = 50
+# Max IPs to put in a tshark display filter
+_MAX_FILTER_IPS = 200
 
 
 def analyze_targeted_pcaps(
@@ -282,17 +282,23 @@ def _extract_smb(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
         "smb.cmd", "smb2.cmd",
         "smb.file", "smb2.filename",
         "smb2.tree",
+        "smb2.find.pattern",                   # SMB2 Find Request search pattern
     ]
     for row in _tshark(tshark, pcap, flt, fields):
         if len(out["smb_sessions"]) >= _MAX["smb"]:
             break
+        # smb2.filename captures both Create Request filenames AND
+        # directory listing filenames (Find Response reuses this field)
+        filename = _g(row, 6) or _g(row, 5)
+        find_pattern = _g(row, 8)
         out["smb_sessions"].append({
             "ts": _g(row, 0),
             "src_ip": _g(row, 1),
             "dst_ip": _g(row, 2),
             "smb_cmd": _g(row, 3),
             "smb2_cmd": _g(row, 4),
-            "filename": _g(row, 6) or _g(row, 5),
+            "filename": filename,
+            "find_pattern": find_pattern,
             "tree": _g(row, 7),
             "source_pcap": pcap_name,
         })

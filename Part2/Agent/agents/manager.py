@@ -59,9 +59,10 @@ def run_multi_agent(
     # Batch 2: C (with A+B context)
     # Batch 3: D (with A+B+C context)
     parallel_batches = [
-        ["A", "B"],   # independent — run in parallel
-        ["C"],        # depends on A + B
-        ["D"],        # depends on A + B + C
+        ["A"],        # sequential to avoid rate limits on single API key
+        ["B"],
+        ["C"],
+        ["D"],
     ]
 
     def _build_prompt(qid: str) -> str:

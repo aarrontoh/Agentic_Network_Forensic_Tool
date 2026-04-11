@@ -92,12 +92,6 @@ class GeminiReasoner:
 
 
 def build_reasoner(name: str, openai_model: str | None, gemini_model: str | None):
-    if name == "openai":
-        if not openai_model:
-            raise RuntimeError("OPENAI_MODEL must be set when using the OpenAI reasoner.")
-        return OpenAIReasoner(openai_model)
-    if name == "gemini":
-        if not gemini_model:
-            raise RuntimeError("GEMINI_MODEL must be set when using the Gemini reasoner.")
-        return GeminiReasoner(gemini_model)
-    return DeterministicReasoner()
+    # Forced to OpenAI reasoner as per user request
+    model = openai_model or os.getenv("OPENAI_MODEL", "gpt-4o")
+    return OpenAIReasoner(model)

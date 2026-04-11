@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Set
 from tools.common import is_internal_ip
 
 # Safety cap: collect at most this many alerts per category to avoid OOM
-_MAX_PER_CAT = 10_000
+_MAX_PER_CAT = 500_000
 
 # Internal IPs that appear in more than this fraction of alerts are likely
 # infrastructure (DNS servers, domain controllers) and should NOT be sent

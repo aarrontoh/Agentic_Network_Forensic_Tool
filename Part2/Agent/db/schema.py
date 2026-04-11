@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS pcap_smb (
     smb_cmd      TEXT,
     smb2_cmd     TEXT,
     filename     TEXT,
+    find_pattern TEXT,
     tree         TEXT,
     source_pcap  TEXT
 );

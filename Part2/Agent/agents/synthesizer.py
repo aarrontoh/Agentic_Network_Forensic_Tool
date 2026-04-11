@@ -53,15 +53,24 @@ def synthesize_report(
     model: str = "",
 ) -> str:
     """
-    Generate a professional Markdown forensic report from worker findings.
-
-    Falls back to a template-based report if Gemini is unavailable.
+    Generate a professional Markdown forensic report from worker findings using GPT-4o.
     """
-    model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+    if not api_key:
+        print("  [Synthesizer] OPENAI_API_KEY missing, using template report")
+        return _template_report(findings, db_stats)
 
     findings_data = {}
     for qid, finding in findings.items():
         directive = INVESTIGATION_DIRECTIVES.get(qid, {})
+        # Safety: truncate evidence if there's too much for the prompt
+        evidence_list = [e.to_dict() for e in finding.evidence]
+        if len(evidence_list) > 15:
+            evidence_list = evidence_list[:15]
+            evidence_list.append({"note": "... truly large amount of evidence; truncated for reporting."})
+
         findings_data[qid] = {
             "title": finding.title,
             "question": directive.get("question", ""),
@@ -69,7 +78,7 @@ def synthesize_report(
             "confidence": finding.confidence,
             "mitre": finding.mitre,
             "summary": finding.summary,
-            "evidence": [e.to_dict() for e in finding.evidence],
+            "evidence": evidence_list,
             "limitations": finding.limitations,
             "next_steps": finding.next_steps,
         }
@@ -81,60 +90,25 @@ def synthesize_report(
         db_stats=json.dumps(db_stats, indent=2),
     )
 
-    # Build fallback order: gemini models first → groq → together → sambanova
-    backends_to_try = []
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a senior forensic report writer."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        result = response.choices[0].message.content
+        if result:
+            print(f"  [Synthesizer] Report generated using openai/{model}")
+            return result
+    except Exception as e:
+        print(f"  [Synthesizer] openai/{model} failed: {str(e)[:100]}")
 
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
-    if gemini_key:
-        models_str = os.getenv("GEMINI_MODELS", "gemini-2.5-flash")
-        for m in models_str.split(","):
-            m = m.strip()
-            if m:
-                backends_to_try.append(("gemini", m, gemini_key, None))
-
-    _OPENAI_BACKENDS = [
-        ("groq", "GROQ_API_KEY", "GROQ_MODEL", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1"),
-        ("together", "TOGETHER_API_KEY", "TOGETHER_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct", os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1")),
-        ("sambanova", "SAMBANOVA_API_KEY", "SAMBANOVA_MODEL", "Llama-4-Maverick-17B-128E-Instruct", "https://api.sambanova.ai/v1"),
-    ]
-    for name, key_env, model_env, default_model, base_url in _OPENAI_BACKENDS:
-        api_key = os.getenv(key_env, "").strip()
-        if api_key:
-            backends_to_try.append((name, os.getenv(model_env, default_model), api_key, base_url))
-
-    for backend, llm_model, api_key, base_url in backends_to_try:
-        try:
-            if backend == "gemini":
-                from google import genai
-                from google.genai import types
-                client = genai.Client(api_key=api_key)
-                response = client.models.generate_content(
-                    model=llm_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(temperature=0.3),
-                )
-                result = response.text
-            else:
-                from openai import OpenAI
-                client = OpenAI(api_key=api_key, base_url=base_url)
-                response = client.chat.completions.create(
-                    model=llm_model,
-                    messages=[
-                        {"role": "system", "content": "You are a senior forensic report writer."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.3,
-                )
-                result = response.choices[0].message.content
-
-            if result:
-                print(f"  [Synthesizer] Report generated using {backend}/{llm_model}")
-                return result
-        except Exception as e:
-            print(f"  [Synthesizer] {backend}/{llm_model} failed: {str(e)[:100]}, trying next...")
-            continue
-
-    print("  [Synthesizer] All backends failed, using template report")
+    print("  [Synthesizer] All LLM backends failed, using template report")
     return _template_report(findings, db_stats)
 
 

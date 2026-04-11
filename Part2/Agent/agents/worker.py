@@ -27,7 +27,7 @@ from models import EvidenceItem, Finding
 from agents.tool_registry import TOOL_DECLARATIONS, dispatch_tool
 
 # Maximum tool-calling iterations before forcing the agent to conclude
-_MAX_ITERATIONS = 15
+_MAX_ITERATIONS = 20
 
 # Retry settings for rate-limit (429) errors
 _MAX_RETRIES = 5
@@ -67,14 +67,14 @@ _SUBMIT_FINDING_DECL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "ts": {"type": "string", "description": "Timestamp of the evidence."},
-                        "src_ip": {"type": "string"},
-                        "dst_ip": {"type": "string"},
-                        "protocol": {"type": "string"},
-                        "description": {"type": "string", "description": "What this evidence shows. Reference query results."},
+                        "ts": {"type": "string", "description": "Exact timestamp from query results (e.g. '2025-03-01T18:20:01.130Z'). MUST be a real timestamp from your SQL results, never empty or rounded."},
+                        "src_ip": {"type": "string", "description": "Source IP address from query results. MUST be filled."},
+                        "dst_ip": {"type": "string", "description": "Destination IP address from query results. MUST be filled."},
+                        "protocol": {"type": "string", "description": "Protocol (e.g. 'RDP', 'SMB', 'DCERPC', 'TLS', 'DNS')."},
+                        "description": {"type": "string", "description": "What this evidence shows. Reference specific query results with exact numbers."},
                         "artifact": {"type": "string", "description": "Source table or data source."},
                     },
-                    "required": ["description", "artifact"],
+                    "required": ["ts", "src_ip", "dst_ip", "description", "artifact"],
                 },
             },
             "limitations": {
@@ -93,18 +93,164 @@ _SUBMIT_FINDING_DECL = {
 }
 
 
+def _deadline_nudge_openai(messages, iteration):
+    """Inject deadline warnings into OpenAI-compatible message lists."""
+    if iteration == _MAX_ITERATIONS - 4:
+        messages.append({"role": "user", "content": (
+            "IMPORTANT: You are running low on remaining iterations. "
+            "You MUST call submit_finding within the next 3-4 tool calls. "
+            "Summarize what you have found so far and submit your finding now, "
+            "even if your investigation is not fully complete. "
+            "Include ALL evidence items with exact timestamps, src_ip, and dst_ip from your queries. "
+            "An incomplete finding is better than no finding at all."
+        )})
+    elif iteration == _MAX_ITERATIONS - 1:
+        messages.append({"role": "user", "content": (
+            "FINAL WARNING: This is your LAST iteration. You MUST call submit_finding RIGHT NOW "
+            "with whatever evidence you have gathered. Do NOT make any more query_db calls. "
+            "Call submit_finding immediately."
+        )})
+
+
+def _tool_choice_for_iteration(iteration):
+    """Force submit_finding on the last iteration."""
+    if iteration >= _MAX_ITERATIONS:
+        return {"type": "function", "function": {"name": "submit_finding"}}
+    return "auto"
+
+
 def _get_backend() -> str:
     """Return the active LLM backend."""
-    return os.getenv("LLM_BACKEND", "groq").strip().lower()
+    return os.getenv("LLM_BACKEND", "openai").strip().lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenAI backend (gpt-4o)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_openai_client():
+    """Create a client for OpenAI."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for OpenAI backend.")
+    try:
+        from openai import OpenAI
+        return OpenAI(api_key=api_key)
+    except ImportError:
+        raise RuntimeError("openai package is required. Run: pip install openai")
+
+
+def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, log_callback):
+    """OpenAI function-calling loop for gpt-4o."""
+    model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+    client = _get_openai_client()
+    tools = _build_openai_tools()
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Begin your investigation. Start by calling summarize_db to see what data is available, then use query_db to investigate."},
+    ]
+    finding_result = None
+
+    for iteration in range(1, _MAX_ITERATIONS + 1):
+        # Inject deadline nudge when approaching iteration limit
+        if iteration == _MAX_ITERATIONS - 4:
+            messages.append({"role": "user", "content": (
+                "IMPORTANT: You are running low on remaining iterations. "
+                "You MUST call submit_finding within the next 3-4 tool calls. "
+                "Summarize what you have found so far and submit your finding now, "
+                "even if your investigation is not fully complete. "
+                "Include ALL evidence items with exact timestamps, src_ip, and dst_ip from your queries. "
+                "An incomplete finding is better than no finding at all."
+            )})
+        elif iteration == _MAX_ITERATIONS - 1:
+            messages.append({"role": "user", "content": (
+                "FINAL WARNING: This is your LAST iteration. You MUST call submit_finding RIGHT NOW "
+                "with whatever evidence you have gathered. Do NOT make any more query_db calls. "
+                "Call submit_finding immediately."
+            )})
+
+        # Implementation with robust truncation handling
+        response = None
+        backoff = _INITIAL_BACKOFF
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=_tool_choice_for_iteration(iteration),
+                    temperature=0.1,
+                )
+                break
+            except Exception as api_err:
+                err_str = str(api_err).lower()
+                is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
+                if is_rate_limit and attempt < _MAX_RETRIES:
+                    if log_callback:
+                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
+                    print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
+                    time.sleep(backoff)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    continue
+                raise
+
+        if response is None:
+            raise RuntimeError("All retries exhausted due to rate limiting")
+
+        choice = response.choices[0]
+        msg = choice.message
+        messages.append({k: v for k, v in msg.model_dump().items() if k in ("role", "content", "tool_calls")})
+
+        if not msg.tool_calls:
+            if choice.finish_reason == "stop":
+                messages.append({"role": "user", "content": "Continue your investigation. Use the tools to gather evidence, then call submit_finding when ready."})
+            continue
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            if log_callback:
+                log_callback("tool_call", {"question_id": question_id, "iteration": iteration, "tool": tool_name, "args": _truncate_args(tool_args)})
+
+            if tool_name == "submit_finding":
+                finding_result = tool_args
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"status": "accepted"})})
+                break
+            else:
+                result = dispatch_tool(conn, tool_name, tool_args)
+                # Optimization: truncate before full serialization
+                if isinstance(result.get("rows"), list) and len(result["rows"]) > 30:
+                    result["rows"] = result["rows"][:30]
+                    result["truncated"] = True
+                    result["note"] = "Showing first 30 rows. Use LIMIT for more."
+
+                result_str = json.dumps(result, default=str)
+                # Hard limit on tool response size for OpenAI safety
+                if len(result_str) > 6000:
+                    result_str = result_str[:6000] + "... [TRUNCATED]"
+
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+
+        if finding_result:
+            break
+
+    return finding_result, iteration
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gemini backend
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_gemini_client():
-    """Lazily import and create Gemini client."""
-    api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+def _get_gemini_client(api_key: str = ""):
+    """Lazily import and create Gemini client with a specific API key."""
+    api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is required for Gemini backend.")
     try:
@@ -115,10 +261,31 @@ def _get_gemini_client():
         raise RuntimeError("google-genai is required. Run: pip install google-genai")
 
 
+# Thread-local storage for passing the API key to the Gemini runner
+import threading
+_gemini_key_local = threading.local()
+
+
 def _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, log_callback):
-    """Gemini function-calling loop."""
+    """Gemini function-calling loop with inline API key rotation.
+
+    When a key hits its daily quota mid-conversation, the runner swaps to the
+    next available Gemini key WITHOUT losing the conversation history.  This
+    preserves context across all 15 investigation iterations.
+    """
+    initial_key = getattr(_gemini_key_local, "api_key", "")
     model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    client, types = _get_gemini_client()
+
+    # Build a queue of Gemini keys to try — start from the requested key
+    all_keys = _get_gemini_keys()
+    if initial_key in all_keys:
+        start_idx = all_keys.index(initial_key)
+        key_queue = all_keys[start_idx:] + all_keys[:start_idx]
+    else:
+        key_queue = all_keys if all_keys else [initial_key]
+
+    current_key_idx = 0
+    client, types = _get_gemini_client(key_queue[current_key_idx])
 
     all_tools = TOOL_DECLARATIONS + [_SUBMIT_FINDING_DECL]
     tools = [types.Tool(function_declarations=all_tools)]
@@ -133,10 +300,37 @@ def _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 "parts": [types.Part.from_text(text="Begin your investigation. Start by calling summarize_db to see what data is available, then use query_db to investigate.")],
             })
 
-        # Retry loop for rate-limit errors
+        # Inject deadline nudge when approaching iteration limit
+        if iteration == _MAX_ITERATIONS - 4:
+            messages.append({
+                "role": "user",
+                "parts": [types.Part.from_text(text=(
+                    "IMPORTANT: You are running low on remaining iterations. "
+                    "You MUST call submit_finding within the next 3-4 tool calls. "
+                    "Summarize what you have found so far and submit your finding now, "
+                    "even if your investigation is not fully complete. "
+                    "Include ALL evidence items with exact timestamps, src_ip, and dst_ip from your queries. "
+                    "An incomplete finding is better than no finding at all."
+                ))],
+            })
+        elif iteration == _MAX_ITERATIONS - 1:
+            messages.append({
+                "role": "user",
+                "parts": [types.Part.from_text(text=(
+                    "FINAL WARNING: This is your LAST iteration. You MUST call submit_finding RIGHT NOW "
+                    "with whatever evidence you have gathered. Do NOT make any more query_db calls. "
+                    "Call submit_finding immediately."
+                ))],
+            })
+
+        # Retry loop with inline key rotation on ANY rate limit (429)
+        # Strategy: retry once on same key (short wait), then rotate key.
+        # This avoids wasting minutes retrying a key that's exhausted.
         response = None
-        backoff = _INITIAL_BACKOFF
-        for attempt in range(_MAX_RETRIES + 1):
+        max_attempts_per_key = 2  # try twice on same key, then rotate
+        attempt_on_current_key = 0
+
+        while True:
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -151,14 +345,41 @@ def _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, lo
             except Exception as api_err:
                 err_str = str(api_err).lower()
                 is_rate_limit = "429" in err_str or "resource_exhausted" in err_str or "rate" in err_str
-                if is_rate_limit and attempt < _MAX_RETRIES:
+
+                if not is_rate_limit:
+                    raise  # Non-rate-limit error — bail out
+
+                attempt_on_current_key += 1
+
+                if attempt_on_current_key < max_attempts_per_key:
+                    # First retry: short wait on same key
+                    wait = 10
+                    print(f"    [Worker {question_id}] Rate limited — waiting {wait}s then retry on same key...")
                     if log_callback:
-                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
-                    print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
-                    time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt_on_current_key, "backoff_seconds": wait, "key": f"...{key_queue[current_key_idx][-6:]}"})
+                    time.sleep(wait)
                     continue
-                raise
+
+                # Exhausted retries on this key — rotate to next key
+                current_key_idx += 1
+                if current_key_idx < len(key_queue):
+                    new_key = key_queue[current_key_idx]
+                    print(f"    [Worker {question_id}] Key rate-limited — rotating to key#{current_key_idx + 1} (...{new_key[-6:]}) [context preserved, iteration {iteration}]")
+                    if log_callback:
+                        log_callback("key_rotated", {
+                            "question_id": question_id,
+                            "iteration": iteration,
+                            "old_key": f"...{key_queue[current_key_idx - 1][-6:]}",
+                            "new_key": f"...{new_key[-6:]}",
+                            "context_preserved": True,
+                        })
+                    client, types = _get_gemini_client(new_key)
+                    tools = [types.Tool(function_declarations=all_tools)]
+                    attempt_on_current_key = 0  # Reset for new key
+                    time.sleep(2)  # Brief pause before trying new key
+                    continue
+                else:
+                    raise RuntimeError("All Gemini API keys exhausted (rate limited)")
 
         if response is None:
             raise RuntimeError("All retries exhausted due to rate limiting")
@@ -167,7 +388,7 @@ def _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, lo
             break
 
         candidate = response.candidates[0]
-        parts = candidate.content.parts if candidate.content else []
+        parts = (candidate.content.parts if candidate.content and candidate.content.parts else []) or []
 
         function_calls = []
         text_parts = []
@@ -267,6 +488,8 @@ def _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, 
     finding_result = None
 
     for iteration in range(1, _MAX_ITERATIONS + 1):
+        _deadline_nudge_openai(messages, iteration)
+
         # Retry loop for rate-limit errors
         response = None
         backoff = _INITIAL_BACKOFF
@@ -276,7 +499,7 @@ def _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, 
                     model=model,
                     messages=messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=_tool_choice_for_iteration(iteration),
                     temperature=0.1,
                 )
                 break
@@ -315,6 +538,8 @@ def _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, 
             tool_name = tc.function.name
             try:
                 tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
             except json.JSONDecodeError:
                 tool_args = {}
 
@@ -379,6 +604,8 @@ def _run_groq_worker(conn, question_id, title, mitre, system_prompt, model, log_
     finding_result = None
 
     for iteration in range(1, _MAX_ITERATIONS + 1):
+        _deadline_nudge_openai(messages, iteration)
+
         response = None
         backoff = _INITIAL_BACKOFF
         for attempt in range(_MAX_RETRIES + 1):
@@ -387,7 +614,7 @@ def _run_groq_worker(conn, question_id, title, mitre, system_prompt, model, log_
                     model=model,
                     messages=messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=_tool_choice_for_iteration(iteration),
                     temperature=0.1,
                 )
                 break
@@ -420,6 +647,8 @@ def _run_groq_worker(conn, question_id, title, mitre, system_prompt, model, log_
             tool_name = tc.function.name
             try:
                 tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
             except json.JSONDecodeError:
                 tool_args = {}
 
@@ -474,6 +703,8 @@ def _run_together_worker(conn, question_id, title, mitre, system_prompt, model, 
     finding_result = None
 
     for iteration in range(1, _MAX_ITERATIONS + 1):
+        _deadline_nudge_openai(messages, iteration)
+
         response = None
         backoff = _INITIAL_BACKOFF
         for attempt in range(_MAX_RETRIES + 1):
@@ -482,7 +713,7 @@ def _run_together_worker(conn, question_id, title, mitre, system_prompt, model, 
                     model=model,
                     messages=messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=_tool_choice_for_iteration(iteration),
                     temperature=0.1,
                 )
                 break
@@ -514,6 +745,8 @@ def _run_together_worker(conn, question_id, title, mitre, system_prompt, model, 
             tool_name = tc.function.name
             try:
                 tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
             except json.JSONDecodeError:
                 tool_args = {}
 
@@ -567,6 +800,8 @@ def _run_sambanova_worker(conn, question_id, title, mitre, system_prompt, model,
     finding_result = None
 
     for iteration in range(1, _MAX_ITERATIONS + 1):
+        _deadline_nudge_openai(messages, iteration)
+
         response = None
         backoff = _INITIAL_BACKOFF
         for attempt in range(_MAX_RETRIES + 1):
@@ -575,7 +810,7 @@ def _run_sambanova_worker(conn, question_id, title, mitre, system_prompt, model,
                     model=model,
                     messages=messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice=_tool_choice_for_iteration(iteration),
                     temperature=0.1,
                 )
                 break
@@ -607,6 +842,8 @@ def _run_sambanova_worker(conn, question_id, title, mitre, system_prompt, model,
             tool_name = tc.function.name
             try:
                 tool_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                if not isinstance(tool_args, dict):
+                    tool_args = {}
             except json.JSONDecodeError:
                 tool_args = {}
 
@@ -638,63 +875,47 @@ def _run_sambanova_worker(conn, question_id, title, mitre, system_prompt, model,
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_gemini_keys() -> List[str]:
+    """Return all configured Gemini API keys (supports multi-key rotation)."""
+    # GEMINI_API_KEYS (comma-separated) takes priority over single GEMINI_API_KEY
+    multi = os.getenv("GEMINI_API_KEYS", "").strip()
+    if multi:
+        return [k.strip() for k in multi.split(",") if k.strip()]
+    single = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    return [single] if single else []
+
+
 def _get_fallback_order() -> List[tuple]:
     """
-    Return the backend fallback order as a list of (backend, model) tuples.
-
-    Gemini is expanded into multiple entries (one per model in GEMINI_MODELS)
-    so that rate-limit exhaustion on one model falls through to the next.
-
-    Default order: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-1.5-flash
-                   → groq → together → sambanova
+    Return the backend fallback order. Only openai/gpt-4o is allowed
+    as per current configuration.
     """
     primary = _get_backend()
     available: List[tuple] = []
 
-    # Helper: append gemini model entries
-    def _add_gemini():
-        api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
-        if not api_key:
-            return
-        models_str = os.getenv("GEMINI_MODELS", "gemini-2.5-flash")
-        for m in models_str.split(","):
-            m = m.strip()
-            if m:
-                available.append(("gemini", m))
+    def _add_openai():
+        available.append(("openai", os.getenv("OPENAI_MODEL", "gpt-4o"), os.getenv("OPENAI_API_KEY", ""), 0))
 
-    def _add_groq():
-        if os.getenv("GROQ_API_KEY", "").strip():
-            available.append(("groq", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")))
+    # Gemini and Groq disabled by user request
+    # def _add_gemini(): ...
+    # def _add_groq(): ...
 
-    def _add_together():
-        if os.getenv("TOGETHER_API_KEY", "").strip():
-            available.append(("together", os.getenv("TOGETHER_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct")))
-
-    def _add_sambanova():
-        if os.getenv("SAMBANOVA_API_KEY", "").strip():
-            available.append(("sambanova", os.getenv("SAMBANOVA_MODEL", "Llama-4-Maverick-17B-128E-Instruct")))
-
-    # Build order: primary first, then the rest
     adders = {
-        "gemini": _add_gemini,
-        "groq": _add_groq,
-        "together": _add_together,
-        "sambanova": _add_sambanova,
+        "openai": _add_openai,
     }
-    all_names = ["gemini", "groq", "together", "sambanova"]
-    order = [primary] + [b for b in all_names if b != primary]
+    
+    # We only allow openai now
+    order = ["openai"]
     for name in order:
         if name in adders:
             adders[name]()
 
-    return available if available else [("gemini", "gemini-2.5-flash")]
+    return available if available else [("openai", "gpt-4o", "", 0)]
 
 
 _BACKEND_RUNNERS = {
-    "groq": lambda *a: _run_groq_worker(*a),
-    "together": lambda *a: _run_together_worker(*a),
-    "sambanova": lambda *a: _run_sambanova_worker(*a),
-    "gemini": lambda *a: _run_gemini_worker(*a),
+    "openai": lambda *a: _run_openai_worker(*a),
+    # Gemini and Groq runners are disabled
 }
 
 
@@ -716,20 +937,40 @@ def run_worker(
     fallback_order = _get_fallback_order()
     failed_backends = []
 
-    for i, (backend, backend_model) in enumerate(fallback_order):
+    for i, (backend, backend_model, api_key, key_idx) in enumerate(fallback_order):
         is_fallback = i > 0
 
+        # Set the API key for Gemini multi-key rotation (thread-safe)
+        # Offset starting key by question_id so parallel workers (A+B) don't
+        # collide on the same key and trigger rate limits.
+        if backend == "gemini" and api_key:
+            all_keys = _get_gemini_keys()
+            qid_offset = ord(question_id) - ord('A')  # A=0, B=1, C=2, D=3
+            if all_keys and len(all_keys) > 1:
+                offset_key = all_keys[qid_offset % len(all_keys)]
+                _gemini_key_local.api_key = offset_key
+                key_label = f"key#{(qid_offset % len(all_keys)) + 1}"
+            else:
+                _gemini_key_local.api_key = api_key
+                key_label = f"key#{key_idx}"
+        else:
+            _gemini_key_local.api_key = ""
+            key_label = ""
+
+        display_name = f"{backend}/{backend_model}" + (f" ({key_label})" if key_label else "")
+
         if is_fallback:
-            print(f"    [Worker {question_id}] Falling back to {backend} ({backend_model})...")
+            print(f"    [Worker {question_id}] Falling back to {display_name}...")
 
         if log_callback:
             log_callback("worker_started", {
                 "question_id": question_id,
                 "title": title,
-                "backend": backend,
+                "backend": display_name,
                 "model": backend_model,
+                "api_key": f"...{api_key[-6:]}" if api_key else "env",
                 "is_fallback": is_fallback,
-                "failed_backends": failed_backends.copy(),
+                "failed_backends": [f["backend"] for f in failed_backends],
             })
 
         try:
@@ -747,16 +988,16 @@ def run_worker(
             else:
                 short_err = error_msg[:120]
 
-            failed_backends.append({"backend": backend, "model": backend_model, "error": short_err})
-            print(f"    [Worker {question_id}] {backend} ({backend_model}) FAILED: {short_err}")
+            failed_backends.append({"backend": display_name, "model": backend_model, "error": short_err})
+            print(f"    [Worker {question_id}] {display_name} FAILED: {short_err}")
 
             if log_callback:
                 log_callback("backend_failed", {
                     "question_id": question_id,
-                    "backend": backend,
+                    "backend": display_name,
                     "model": backend_model,
                     "error": short_err,
-                    "remaining_backends": [f"{b}/{m}" for b, m in fallback_order[i+1:]],
+                    "remaining_backends": [f"{b}/{m}" for b, m, *_ in fallback_order[i+1:]],
                 })
             continue  # Try next backend
 
@@ -766,9 +1007,10 @@ def run_worker(
                 "question_id": question_id,
                 "iterations": iteration,
                 "has_finding": finding_result is not None,
-                "backend": backend,
+                "backend": display_name,
                 "model": backend_model,
-                "failed_backends": failed_backends,
+                "api_key": f"...{api_key[-6:]}" if api_key else "env",
+                "failed_backends": [f["backend"] for f in failed_backends],
             })
 
         if not finding_result:
@@ -776,14 +1018,14 @@ def run_worker(
 
         finding = _parse_finding(question_id, title, mitre, finding_result)
         # Attach backend metadata to the finding summary
-        finding.tool_name = f"agent_{question_id.lower()} [{backend}/{backend_model}]"
+        finding.tool_name = f"agent_{question_id.lower()} [{display_name}]"
         if failed_backends:
             finding.limitations = list(finding.limitations or [])
             finding.limitations.insert(0, f"Backends tried before success: {', '.join(f['backend'] + ' (' + f['error'] + ')' for f in failed_backends)}")
         return finding
 
     # All backends failed
-    all_errors = "; ".join(f"{f['backend']}/{f['model']}: {f['error']}" for f in failed_backends)
+    all_errors = "; ".join(f"{f['backend']}: {f['error']}" for f in failed_backends)
     if log_callback:
         log_callback("all_backends_failed", {
             "question_id": question_id,

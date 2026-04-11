@@ -626,6 +626,11 @@
       </div>
     </div>
 
+    <div class="panel" id="llm-log-section" style="display:none">
+      <h2>LLM Activity Log</h2>
+      <div id="llm-log-container" style="max-height:500px;overflow-y:auto;font-family:var(--font-mono);font-size:11px;line-height:1.8;"></div>
+    </div>
+
     <div class="panel" id="live-timeline-section" style="display:none">
       <h2>Event Timeline</h2>
       <ul class="live-timeline-list" id="live-timeline-list"></ul>
@@ -865,6 +870,58 @@ function renderLive(d) {
   renderSegs(d.zeek_results, document.getElementById('zeek-segs'));
   renderSegs(d.pcap_index_results, document.getElementById('pcap-index-segs'));
   renderSegs(d.tshark_results, document.getElementById('tshark-segs'));
+
+  // LLM Activity Log
+  const llmLog = d.llm_log || [];
+  const llmSection = document.getElementById('llm-log-section');
+  const llmContainer = document.getElementById('llm-log-container');
+  if (llmLog.length) {
+    llmSection.style.display = '';
+    const _c = {
+      worker_started: '#00e5ff',
+      worker_completed: '#00e676',
+      backend_failed: '#ff3d00',
+      all_backends_failed: '#ff3d00',
+      rate_limit: '#ffb300',
+      tool_call: '#b388ff',
+      worker_dispatched: '#2979ff',
+      key_rotated: '#ff9f43',
+    };
+    llmContainer.innerHTML = llmLog.map(e => {
+      const evt = e.event_type || '';
+      const color = _c[evt] || '#8a9bb2';
+      const qid = e.question_id || '';
+      let detail = '';
+      if (evt === 'worker_started') {
+        detail = `<span style="color:#00e5ff">STARTING</span> Worker ${qid} &mdash; <b>${esc(e.backend || '')}</b> model=<b>${esc(e.model || '')}</b> api_key=<b>${esc(e.api_key || '')}</b>` + (e.is_fallback ? ' <span style="color:#ffb300">[FALLBACK]</span>' : '');
+      } else if (evt === 'worker_completed') {
+        detail = `<span style="color:#00e676">COMPLETED</span> Worker ${qid} &mdash; <b>${esc(e.backend || '')}</b> api_key=<b>${esc(e.api_key || '')}</b> iterations=${e.iterations || '?'} finding=${e.has_finding ? 'YES' : 'NO'}`;
+        if (e.failed_backends && e.failed_backends.length) detail += ` <span style="color:#ff6b6b">(failed: ${esc(e.failed_backends.join(', '))})</span>`;
+      } else if (evt === 'backend_failed') {
+        detail = `<span style="color:#ff3d00">FAILED</span> Worker ${qid} &mdash; <b>${esc(e.backend || '')}</b>: ${esc(e.error || '')}`;
+        if (e.remaining_backends && e.remaining_backends.length) detail += ` <span style="color:#8a9bb2">(${e.remaining_backends.length} remaining)</span>`;
+      } else if (evt === 'all_backends_failed') {
+        detail = `<span style="color:#ff3d00;font-weight:700">ALL BACKENDS FAILED</span> Worker ${qid}`;
+      } else if (evt === 'rate_limit') {
+        detail = `<span style="color:#ffb300">RATE LIMITED</span> Worker ${qid} &mdash; attempt ${e.attempt || '?'}, backoff ${e.backoff_seconds || '?'}s`;
+      } else if (evt === 'tool_call') {
+        const args = e.args || {};
+        const argStr = args.sql ? esc(args.sql).substring(0, 80) : JSON.stringify(args).substring(0, 60);
+        detail = `<span style="color:#b388ff">TOOL</span> Worker ${qid} [iter ${e.iteration || '?'}] ${esc(e.tool || '')}(${argStr})`;
+      } else if (evt === 'key_rotated') {
+        detail = `<span style="color:#ff9f43;font-weight:700">KEY ROTATED</span> Worker ${qid} [iter ${e.iteration || '?'}] &mdash; ${esc(e.old_key || '')} &rarr; ${esc(e.new_key || '')} <span style="color:#00e676">(context preserved)</span>`;
+      } else if (evt === 'worker_dispatched') {
+        detail = `<span style="color:#2979ff">DISPATCHED</span> Worker ${qid}: ${esc(e.title || '')}`;
+      } else {
+        detail = `${evt}: ${JSON.stringify(e).substring(0, 120)}`;
+      }
+      return `<div style="border-left:3px solid ${color};padding:2px 8px;margin:2px 0;background:rgba(255,255,255,0.02);">${detail}</div>`;
+    }).join('');
+    // Auto-scroll to bottom
+    llmContainer.scrollTop = llmContainer.scrollHeight;
+  } else {
+    llmSection.style.display = 'none';
+  }
 
   // Live timeline
   const tl = d.timeline;

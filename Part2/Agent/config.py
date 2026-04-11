@@ -58,8 +58,9 @@ class AgentConfig:
     def from_env(cls) -> "AgentConfig":
         config = cls()
         config.internal_cidrs = _parse_csv("NF_INTERNAL_CIDRS", config.internal_cidrs)
-        config.openai_model = os.getenv("OPENAI_MODEL", "").strip() or None
-        config.gemini_model = os.getenv("GEMINI_MODEL", "").strip() or None
+        config.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o").strip()
+        # Gemini disabled
+        config.gemini_model = None
         config.network_dir = os.getenv("NF_NETWORK_DIR", "").strip()
         config.alert_json_path = os.getenv("NF_ALERT_JSON", "").strip()
         config.zeek_json_path = os.getenv("NF_ZEEK_JSON", "").strip()

@@ -229,7 +229,7 @@ def load_pcap_extractions(conn: sqlite3.Connection, artifacts: Dict[str, Any]) -
     counts["pcap_tls"] = _bulk_insert(conn, "pcap_tls", artifacts.get("pcap_tls_sessions", []), tls_cols)
 
     # SMB
-    smb_cols = ["ts", "src_ip", "dst_ip", "smb_cmd", "smb2_cmd", "filename", "tree", "source_pcap"]
+    smb_cols = ["ts", "src_ip", "dst_ip", "smb_cmd", "smb2_cmd", "filename", "find_pattern", "tree", "source_pcap"]
     counts["pcap_smb"] = _bulk_insert(conn, "pcap_smb", artifacts.get("pcap_smb_sessions", []), smb_cols)
 
     # RDP

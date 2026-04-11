@@ -1,7 +1,7 @@
-CASE_NAME = "Apex Global Logistics"
+CASE_NAME = "SC4063 Network Security"
 
 INCIDENT_SUMMARY = """
-Apex Global Logistics suffered a ransomware incident attributed to the Lynx group.
+SC4063 Network Security investigation: a ransomware incident attributed to the Lynx group.
 The available evidence is a 9-day PCAP captured from a core-switch tap. There is no
 endpoint telemetry or memory image, so all conclusions must be grounded in network data.
 """.strip()

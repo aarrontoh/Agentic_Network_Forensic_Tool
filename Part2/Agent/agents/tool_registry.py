@@ -40,9 +40,14 @@ def query_db(conn: sqlite3.Connection, sql: str, params: Optional[List[str]] = N
     if not sql_upper.startswith("SELECT"):
         return {"error": "Only SELECT queries are allowed. The database is read-only for agents."}
 
-    # Block dangerous patterns
+    # Block dangerous patterns — strip string literals first so values like
+    # 'delete.me' don't false-positive on the DELETE keyword
+    import re
+    sql_no_strings = re.sub(r"'[^']*'", "", sql_upper)  # remove 'quoted values'
+    sql_no_strings = re.sub(r'"[^"]*"', "", sql_no_strings)  # remove "quoted values"
     for blocked in ("DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "ATTACH", "DETACH"):
-        if blocked in sql_upper:
+        # Check as whole word to avoid false positives
+        if re.search(r'\b' + blocked + r'\b', sql_no_strings):
             return {"error": f"Blocked keyword '{blocked}' detected. Only read-only SELECT queries are permitted."}
 
     try:

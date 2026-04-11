@@ -17,7 +17,7 @@ def add_title(story, styles):
     story.append(Spacer(1, 0.2 * inch))
     story.append(
         Paragraph(
-            "Submission-ready presentation outline for the Apex Global Logistics ransomware case",
+            "Submission-ready presentation outline for the SC4063 Network Security ransomware case",
             styles["Subtitle"],
         )
     )

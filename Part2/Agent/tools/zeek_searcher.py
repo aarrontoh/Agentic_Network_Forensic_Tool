@@ -34,7 +34,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
-MAX_PER_PROTOCOL = 60_000
+MAX_PER_PROTOCOL = 500_000
 _KNOWN_PROTOCOLS = ("conn", "connection", "dns", "ssl", "http", "dce_rpc", "rdp", "smb", "smb_mapping", "smb_files", "weird", "files", "x509", "kerberos", "dhcp", "notice")
 
 _EMPTY_RECORDS = lambda: {p: [] for p in list(_KNOWN_PROTOCOLS) + ["other"]}  # noqa: E731
@@ -113,8 +113,10 @@ def _process_lines(
     progress_cb: Optional[Callable[[int, int], None]],
     progress_interval: int,
 ) -> Dict[str, Any]:
+    import random
     records: Dict[str, List[dict]] = _EMPTY_RECORDS()
-    bucket_full: Dict[str, bool] = {k: False for k in records}
+    # Track how many matched records we've seen per bucket (for reservoir sampling)
+    bucket_seen: Dict[str, int] = {k: 0 for k in records}
     scanned = matched = 0
 
     for raw_line in line_iter:
@@ -150,10 +152,25 @@ def _process_lines(
         log_type = rec.get("fileset", {}).get("name", "other")
         bucket = log_type if log_type in records else "other"
 
-        if not bucket_full[bucket]:
-            records[bucket].append(normalize_zeek_record(rec))
-            if len(records[bucket]) >= MAX_PER_PROTOCOL:
-                bucket_full[bucket] = True
+        normalized = normalize_zeek_record(rec)
+        bucket_seen[bucket] += 1
+        n = bucket_seen[bucket]
+
+        if n <= MAX_PER_PROTOCOL:
+            # Haven't hit the cap yet — just append
+            records[bucket].append(normalized)
+        else:
+            # Reservoir sampling: randomly replace an existing record.
+            # This ensures records from ALL time periods (including late-stage
+            # March 6-8 activity) have an equal chance of being in the sample.
+            j = random.randint(0, n - 1)
+            if j < MAX_PER_PROTOCOL:
+                records[bucket][j] = normalized
+
+    # Sort each bucket by timestamp so the DB has chronological order
+    for bucket in records:
+        if records[bucket]:
+            records[bucket].sort(key=lambda r: r.get("ts", ""))
 
     return {"scanned": scanned, "matched": matched, "records": records}
 

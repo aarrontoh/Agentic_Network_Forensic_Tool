@@ -2,8 +2,8 @@
 """Serve the forensic agent live dashboard.
 
 Usage:
-    python3 serve_dashboard.py --case apex_global
-    python3 serve_dashboard.py --case apex_global --port 8080
+    python3 serve_dashboard.py --case SC4063_Network_Security
+    python3 serve_dashboard.py --case SC4063_Network_Security --port 8080
 """
 from __future__ import annotations
 

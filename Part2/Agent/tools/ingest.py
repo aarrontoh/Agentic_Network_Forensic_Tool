@@ -216,6 +216,17 @@ def run_ingest(
         zeek_result = cached_zeek
     else:
         ioc_ips  = set(alert_result.get("all_ips", []))
+        # Add well-known exfiltration service IPs so their Zeek traffic is captured.
+        # These are commonly used by ransomware groups and may not appear in alerts.
+        _EXFIL_SERVICE_IPS = {
+            "51.91.79.17",    # temp.sh (OVH)
+            "65.22.162.9",    # temp.sh (alternative)
+            "65.22.160.9",    # temp.sh (alternative)
+            "144.76.136.153", # file.io
+            "144.76.136.154", # file.io
+            "95.216.22.32",   # transfer.sh
+        }
+        ioc_ips |= _EXFIL_SERVICE_IPS
         # Community IDs disabled for grep — even high-priority CIDs produce
         # thousands of patterns that match nearly every Zeek line.
         # IP-based filtering alone is precise enough.
