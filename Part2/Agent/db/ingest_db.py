@@ -320,20 +320,4 @@ def load_all(
         if progress_cb:
             progress_cb(i, total_steps, name, counts.get(name, sum(result.values()) if isinstance(result, dict) else result))
 
-    # Post-load: credential extraction (correlates attacker RDP sessions with
-    # credential evidence in raw PCAP frames — handles wrong sensor clocks)
-    pcap_dir = artifacts.get("pcap_dir", "")
-    if pcap_dir and os.path.isdir(pcap_dir):
-        try:
-            from tools.pcap_credential_extractor import run_credential_extraction
-            tshark_bin = artifacts.get("tshark_bin", "tshark")
-            cred_count = run_credential_extraction(
-                conn, pcap_dir, tshark_bin=tshark_bin,
-                progress_callback=lambda msg: print(f"    {msg}"),
-            )
-            counts["pcap_credentials"] = cred_count
-        except Exception as exc:
-            print(f"  [CredExtract] WARNING: credential extraction failed: {exc}")
-            counts["pcap_credentials"] = 0
-
     return counts
