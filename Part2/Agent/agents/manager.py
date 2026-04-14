@@ -41,29 +41,32 @@ def run_multi_agent(
     conn: sqlite3.Connection,
     state: AnalysisState,
     progress_callback: Optional[Callable] = None,
+    backend_config: Optional[Dict[str, str]] = None,
+    sequential: bool = False,
+    inter_worker_cooldown: int = 0,
 ) -> Dict[str, Finding]:
     """
     Execute the full multi-agent investigation pipeline.
+
+    If sequential=True, all workers run one at a time (no parallel batches).
+    Use this for rate-limited backends like CommonStack to avoid concurrent API calls.
 
     Returns a dict mapping question_id to Finding.
     """
     db_context = _build_manager_context(conn)
     findings: Dict[str, Finding] = {}
 
-    # ── Parallel execution strategy ──────────────────────────────────────────
-    # Workers A (Initial Access) and B (Lateral Movement) are independent —
-    # run them in parallel. C (Exfiltration) benefits from A+B context.
-    # D (Payload Deployment) benefits from all prior findings.
-    #
-    # Batch 1: A + B in parallel
-    # Batch 2: C (with A+B context)
-    # Batch 3: D (with A+B+C context)
-    parallel_batches = [
-        ["A"],        # sequential to avoid rate limits on single API key
-        ["B"],
-        ["C"],
-        ["D"],
-    ]
+    # ── Execution strategy ────────────────────────────────────────────────────
+    # Default: A+B in parallel (independent), then C, then D.
+    # sequential=True: all workers one at a time to avoid rate limits.
+    if sequential:
+        parallel_batches = [["A"], ["B"], ["C"], ["D"]]
+    else:
+        parallel_batches = [
+            ["A", "B"],  # Independent — run in parallel
+            ["C"],        # Benefits from A+B context
+            ["D"],        # Benefits from A+B+C context
+        ]
 
     def _build_prompt(qid: str) -> str:
         """Build worker prompt with accumulated prior findings context."""
@@ -110,6 +113,7 @@ def run_multi_agent(
             mitre=worker_config["mitre"],
             system_prompt=full_prompt,
             log_callback=lambda event, data: state.log(event, data),
+            backend_config=backend_config,
         )
         return qid, finding
 
@@ -170,7 +174,7 @@ def run_multi_agent(
 
         # Cooldown between batches (not between parallel workers in same batch)
         if batch_idx < len(parallel_batches) - 1:
-            cooldown = int(os.getenv("WORKER_COOLDOWN_SECONDS", "5"))
+            cooldown = inter_worker_cooldown if inter_worker_cooldown > 0 else int(os.getenv("WORKER_COOLDOWN_SECONDS", "5"))
             if cooldown > 0:
                 print(f"  [Manager] Cooldown {cooldown}s before next batch...")
                 time.sleep(cooldown)

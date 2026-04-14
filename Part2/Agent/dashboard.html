@@ -60,6 +60,13 @@
     .badge-MEDIUM { background: rgba(255,179,0,0.15); color: var(--warning-amber); border: 1px solid var(--warning-amber); }
     .badge-LOW { background: rgba(0,230,118,0.15); color: var(--success-green); border: 1px solid var(--success-green); }
 
+    /* ── KPI Row ── */
+    .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 20px 0; }
+    .kpi-card { background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px 20px; text-align: center; transition: all 0.3s; }
+    .kpi-card:hover { border-color: rgba(0,229,255,0.4); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+    .kpi-value { font-size: 28px; font-weight: 800; font-family: var(--font-mono); background: linear-gradient(135deg, var(--primary-cyan), var(--success-green)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .kpi-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-top: 4px; font-weight: 600; }
+
     /* ── Tab Navigation ── */
     .tab-nav { display: flex; gap: 4px; padding: 6px; background: rgba(10,15,26,0.8); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--panel-border); border-top: none; border-radius: 0 0 16px 16px; margin-bottom: 28px; position: sticky; top: 0; z-index: 100; }
     .tab-btn { flex: 1; padding: 12px 16px; background: transparent; border: 1px solid transparent; border-radius: 10px; color: var(--text-muted); font-family: var(--font-ui); font-size: 12px; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; gap: 8px; position: relative; }
@@ -84,12 +91,8 @@
        8-PHASE PIPELINE TRACKER
        ════════════════════════════════════════════ */
     .phase-pipeline { display: flex; flex-direction: column; gap: 0; }
-    .phase-row {
-      display: grid; grid-template-columns: 50px 1fr; gap: 0; position: relative;
-    }
-    .phase-line-area {
-      display: flex; flex-direction: column; align-items: center; position: relative;
-    }
+    .phase-row { display: grid; grid-template-columns: 50px 1fr; gap: 0; position: relative; }
+    .phase-line-area { display: flex; flex-direction: column; align-items: center; position: relative; }
     .phase-dot {
       width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
       font-size: 13px; font-weight: 800; font-family: var(--font-mono);
@@ -98,6 +101,7 @@
     }
     .phase-dot.done { border-color: var(--success-green); color: var(--success-green); background: rgba(0,230,118,0.1); box-shadow: 0 0 12px rgba(0,230,118,0.3); }
     .phase-dot.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.1); box-shadow: 0 0 12px var(--primary-glow); animation: pulse-border 2s infinite; }
+    .phase-dot.cached { border-color: var(--warning-amber); color: var(--warning-amber); background: rgba(255,179,0,0.1); }
     .phase-dot.error { border-color: var(--error-red); color: var(--error-red); background: rgba(255,61,0,0.1); }
     .phase-connector { width: 2px; flex-grow: 1; background: rgba(255,255,255,0.06); min-height: 8px; }
     .phase-connector.done { background: var(--success-green); box-shadow: 0 0 6px rgba(0,230,118,0.3); }
@@ -117,6 +121,7 @@
     .phase-status-text { font-size: 11px; color: var(--primary-cyan); font-family: var(--font-mono); font-weight: 500; }
     .phase-status-text.done { color: var(--success-green); }
     .phase-status-text.error { color: var(--error-red); }
+    .phase-badge-cached { font-size: 9px; background: rgba(255,179,0,0.12); color: var(--warning-amber); border: 1px solid rgba(255,179,0,0.3); padding: 2px 8px; border-radius: 4px; font-weight: 700; letter-spacing: 0.5px; }
 
     /* Phase detail: data chips */
     .phase-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -219,8 +224,18 @@
     .findings-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
 
     /* ════════════════════════════════════════════
-       TAB 3: REPORT
+       TAB 3: REPORTS
        ════════════════════════════════════════════ */
+    .report-tab-bar { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; }
+    .report-tab-btn { padding: 10px 20px; border-radius: 10px; font-size: 12px; font-weight: 600; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-muted); cursor: pointer; transition: all 0.3s; display: flex; align-items: center; gap: 8px; }
+    .report-tab-btn:hover { border-color: rgba(255,255,255,0.15); color: var(--text-main); }
+    .report-tab-btn.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.06); box-shadow: 0 0 12px rgba(0,229,255,0.1); }
+    .report-tab-btn .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .report-tab-btn .dot.available { background: var(--success-green); box-shadow: 0 0 6px var(--success-glow); }
+    .report-tab-btn .dot.unavailable { background: var(--text-dim); }
+    .report-download-btn { padding: 10px 20px; border-radius: 10px; font-size: 12px; font-weight: 600; background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(41,121,255,0.15)); border: 1px solid rgba(0,229,255,0.3); color: var(--primary-cyan); cursor: pointer; transition: all 0.3s; margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    .report-download-btn:hover { background: linear-gradient(135deg, rgba(0,229,255,0.25), rgba(41,121,255,0.25)); transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,229,255,0.2); }
+    .report-download-btn:active { transform: translateY(0); }
     .report-container { background: var(--panel-bg-solid); border: 1px solid var(--panel-border); border-radius: 14px; padding: 40px 48px; max-width: 900px; margin: 0 auto; box-shadow: 0 8px 40px rgba(0,0,0,0.3); }
     .report-container h1 { font-size: 28px; font-weight: 800; color: var(--text-main); margin: 32px 0 16px; border-bottom: 2px solid rgba(0,229,255,0.2); padding-bottom: 12px; }
     .report-container h1:first-child { margin-top: 0; }
@@ -241,6 +256,10 @@
     .report-container hr { border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 24px 0; }
     .report-container strong { color: var(--text-main); }
     .report-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
+    .report-model-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 11px; font-weight: 600; font-family: var(--font-mono); margin-bottom: 16px; }
+    .report-model-badge.openai { background: rgba(0,230,118,0.08); border: 1px solid rgba(0,230,118,0.25); color: var(--success-green); }
+    .report-model-badge.commonstack { background: rgba(179,136,255,0.08); border: 1px solid rgba(179,136,255,0.25); color: var(--purple); }
+    .report-model-badge.template { background: rgba(138,155,178,0.08); border: 1px solid rgba(138,155,178,0.25); color: var(--text-muted); }
 
     /* ════════════════════════════════════════════
        TAB 4: TIMELINE
@@ -268,6 +287,10 @@
     .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
     .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
     .timeline-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
+    .tl-filter-bar { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+    .tl-filter-btn { padding: 5px 14px; border-radius: 6px; font-size: 11px; font-weight: 600; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-muted); cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
+    .tl-filter-btn:hover { border-color: rgba(255,255,255,0.1); color: var(--text-main); }
+    .tl-filter-btn.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.06); }
 
     /* ════════════════════════════════════════════
        TAB 5: AGENT LOG
@@ -292,6 +315,23 @@
     .log-filter-btn.active { border-color: var(--primary-cyan); color: var(--primary-cyan); background: rgba(0,229,255,0.06); }
     .log-empty { text-align: center; padding: 80px 20px; color: var(--text-dim); font-size: 14px; }
 
+    /* ════════════════════════════════════════════
+       TAB 6: DB EXPLORER
+       ════════════════════════════════════════════ */
+    .db-stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .db-stat-card { background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; transition: all 0.3s; }
+    .db-stat-card:hover { border-color: rgba(0,229,255,0.3); transform: translateY(-2px); }
+    .db-stat-name { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .db-stat-value { font-size: 24px; font-weight: 800; font-family: var(--font-mono); color: var(--primary-cyan); }
+    .db-stat-bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.05); margin-top: 8px; overflow: hidden; }
+    .db-stat-bar-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--primary-cyan), var(--primary-blue)); transition: width 0.6s; }
+
+    /* Toast notification */
+    .toast { position: fixed; bottom: 30px; right: 30px; padding: 14px 24px; border-radius: 12px; font-size: 13px; font-weight: 500; z-index: 1000; transform: translateY(100px); opacity: 0; transition: all 0.4s cubic-bezier(0.175,0.885,0.32,1.275); pointer-events: none; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.success { background: rgba(0,230,118,0.15); border: 1px solid rgba(0,230,118,0.4); color: var(--success-green); backdrop-filter: blur(12px); }
+    .toast.info { background: rgba(0,229,255,0.15); border: 1px solid rgba(0,229,255,0.4); color: var(--primary-cyan); backdrop-filter: blur(12px); }
+
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -313,12 +353,14 @@
       .tab-btn .tab-label { display: none; }
       .report-container { padding: 24px; }
       .worker-grid { grid-template-columns: 1fr; }
+      .kpi-row { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>
 <body>
 
 <canvas id="particles-canvas"></canvas>
+<div class="toast" id="toast"></div>
 
 <div id="waiting">
   <div class="cyber-spinner"></div>
@@ -329,7 +371,7 @@
   <div class="header">
     <div style="flex-grow:1;">
       <h1 id="case-id">---</h1>
-      <div style="display:flex;gap:16px;margin-top:8px;align-items:center;">
+      <div style="display:flex;gap:16px;margin-top:8px;align-items:center;flex-wrap:wrap;">
         <span class="meta" id="started-at"></span>
         <span class="meta" id="updated-at"></span>
         <span class="elapsed" id="elapsed-timer"></span>
@@ -338,38 +380,56 @@
     <span id="stage-badge" class="badge badge-waiting">waiting</span>
   </div>
 
+  <!-- KPI Row -->
+  <div class="kpi-row" id="kpi-row"></div>
+
   <nav class="tab-nav">
     <button class="tab-btn active" data-tab="live"><span class="tab-icon">&#9678;</span><span class="tab-label">Live Monitor</span></button>
     <button class="tab-btn" data-tab="findings"><span class="tab-icon">&#9632;</span><span class="tab-label">Findings</span><span class="tab-notif" id="findings-count" style="display:none">0</span></button>
-    <button class="tab-btn" data-tab="report"><span class="tab-icon">&#9998;</span><span class="tab-label">Report</span></button>
+    <button class="tab-btn" data-tab="report"><span class="tab-icon">&#9998;</span><span class="tab-label">Reports</span><span class="tab-notif" id="reports-count" style="display:none">0</span></button>
     <button class="tab-btn" data-tab="timeline"><span class="tab-icon">&#8942;</span><span class="tab-label">Timeline</span></button>
     <button class="tab-btn" data-tab="agentlog"><span class="tab-icon">&#9881;</span><span class="tab-label">Agent Log</span></button>
+    <button class="tab-btn" data-tab="dbexplorer"><span class="tab-icon">&#9707;</span><span class="tab-label">DB Explorer</span></button>
   </nav>
 
-  <!-- ═══ TAB 1: LIVE MONITOR ═══ -->
+  <!-- TAB 1: LIVE MONITOR -->
   <div class="tab-content active" id="tab-live">
     <div class="panel">
       <h2>Investigation Pipeline</h2>
       <div class="phase-pipeline" id="phase-pipeline"></div>
     </div>
-
     <div class="panel" id="llm-log-section" style="display:none">
       <h2>LLM Activity Log</h2>
       <div class="llm-log-wrap" id="llm-log-container"></div>
     </div>
   </div>
 
-  <!-- ═══ TAB 2: FINDINGS ═══ -->
+  <!-- TAB 2: FINDINGS -->
   <div class="tab-content" id="tab-findings"><div id="findings-full-container"></div></div>
 
-  <!-- ═══ TAB 3: REPORT ═══ -->
-  <div class="tab-content" id="tab-report"><div id="report-full-container"></div></div>
+  <!-- TAB 3: REPORTS -->
+  <div class="tab-content" id="tab-report">
+    <div class="report-tab-bar" id="report-tab-bar"></div>
+    <div id="report-full-container"></div>
+  </div>
 
-  <!-- ═══ TAB 4: TIMELINE ═══ -->
+  <!-- TAB 4: TIMELINE -->
   <div class="tab-content" id="tab-timeline"><div id="timeline-full-container"></div></div>
 
-  <!-- ═══ TAB 5: AGENT LOG ═══ -->
+  <!-- TAB 5: AGENT LOG -->
   <div class="tab-content" id="tab-agentlog"><div id="agentlog-full-container"></div></div>
+
+  <!-- TAB 6: DB EXPLORER -->
+  <div class="tab-content" id="tab-dbexplorer">
+    <div class="panel">
+      <h2>Evidence Database Tables</h2>
+      <div class="db-stats-grid" id="db-stats-grid"></div>
+    </div>
+    <div class="panel">
+      <h2>Ingest Summary</h2>
+      <div id="ingest-summary-container" style="font-family:var(--font-mono);font-size:12px;color:var(--text-muted);"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -399,6 +459,15 @@
 })();
 
 // ═══════════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════════
+function showToast(msg, type='info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast ' + type + ' show';
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ═══════════════════════════════════════════════
 // TABS
 // ═══════════════════════════════════════════════
 const tabBtns = document.querySelectorAll('.tab-btn');
@@ -408,22 +477,23 @@ tabBtns.forEach(btn => btn.addEventListener('click', () => {
   const tab = btn.dataset.tab; if (tab === activeTab) return; activeTab = tab;
   tabBtns.forEach(b => b.classList.remove('active')); btn.classList.add('active');
   tabContents.forEach(c => c.classList.remove('active')); document.getElementById('tab-'+tab).classList.add('active');
-  if (tab === 'findings') loadFindings(); if (tab === 'report') loadReport();
+  if (tab === 'findings') loadFindings(); if (tab === 'report') loadReports();
   if (tab === 'timeline') loadTimeline(); if (tab === 'agentlog') loadAgentLog();
+  if (tab === 'dbexplorer') loadDBExplorer();
 }));
 
 // ═══════════════════════════════════════════════
 // PHASE DEFINITIONS
 // ═══════════════════════════════════════════════
 const PHASES = [
-  { id: 'phase1', num: 1, name: 'Alert Ingestion', desc: 'Streaming Suricata EVE alerts, extracting IOC IPs and community IDs, categorizing by threat type' },
-  { id: 'phase2', num: 2, name: 'Zeek Correlation', desc: 'Scanning 30GB Zeek JSON, filtering records matching alert IOCs via reservoir sampling' },
-  { id: 'phase3', num: 3, name: 'PCAP Targeting', desc: 'Building time-range index with capinfos, selecting targeted PCAP subset for deep analysis' },
-  { id: 'phase4', num: 4, name: 'Deep PCAP Analysis', desc: 'Running tshark with protocol-specific filters: DNS, HTTP, TLS, SMB, RDP extraction' },
-  { id: 'phase5', num: 5, name: 'Database Loading', desc: 'Loading artifacts into SQLite forensic database (13 tables with indexes)' },
-  { id: 'phase6', num: 6, name: 'LLM Agent Investigation', desc: 'Autonomous worker agents query the database with SQL to investigate each forensic question' },
-  { id: 'phase7', num: 7, name: 'Timeline Assembly', desc: 'Building chronological event timeline from all agent findings' },
-  { id: 'phase8', num: 8, name: 'Report Synthesis', desc: 'LLM synthesizer generating C-suite executive report from all findings' },
+  { id: 'phase1', num: 1, name: 'Alert Ingestion', desc: 'Streaming Suricata EVE alerts — extracting IOC IPs and community IDs' },
+  { id: 'phase2', num: 2, name: 'Zeek Correlation', desc: 'Scanning 30 GB Zeek JSON — filtering to IOC-matched records (conn, dns, ssl, http, dce_rpc)' },
+  { id: 'phase3', num: 3, name: 'PCAP Targeting', desc: 'Building capinfos time-range index — all 129 PCAPs selected for deep analysis' },
+  { id: 'phase4', num: 4, name: 'Deep PCAP Analysis', desc: 'tshark extraction (8 threads): DNS · HTTP · TLS · SMB · RDP · DCE-RPC · NetBIOS · TCP conv · SMB-tree · DCSync' },
+  { id: 'phase5', num: 5, name: 'Database Loading', desc: 'Ingesting all artifacts into SQLite forensic database (17 evidence tables)' },
+  { id: 'phase6', num: 6, name: 'Agent Investigation', desc: 'Claude Opus 4.6 workers A/B/C/D investigate independently via SQL tool-calling (up to 30 iterations each)' },
+  { id: 'phase7', num: 7, name: 'Timeline Assembly', desc: 'Building chronological attack timeline from all four worker findings' },
+  { id: 'phase8', num: 8, name: 'Report Synthesis', desc: 'Claude Opus 4.6 synthesizes all findings into a comprehensive MITRE ATT&CK-mapped forensic report' },
 ];
 
 const WORKER_INFO = {
@@ -434,17 +504,13 @@ const WORKER_INFO = {
 };
 
 // ═══════════════════════════════════════════════
-// DETERMINE PHASE STATE FROM progress.json
+// PHASE STATE
 // ═══════════════════════════════════════════════
 function getPhaseStates(d) {
   const stage = d.stage || 'waiting';
   const pp = d.pcap_progress || {};
   const phaseDone = pp.done || 0;
-
-  // Map stage to phase completion
   const states = {};
-
-  // Phases 1-4 are sub-phases of "preprocessing" tracked by pcap_progress.done (1-4)
   for (let i = 1; i <= 4; i++) {
     if (stage === 'preprocessing') {
       if (phaseDone > i) states[i] = 'done';
@@ -454,38 +520,28 @@ function getPhaseStates(d) {
     } else if (stage === 'starting') {
       states[i] = i === 1 ? 'active' : 'pending';
     } else {
-      states[i] = 'done'; // past preprocessing
+      states[i] = 'done';
     }
   }
-
-  // Phase 5: loading_database
   if (stage === 'loading_database') states[5] = 'active';
   else if (['multi_agent','analyzing','synthesizing','reporting','complete'].includes(stage)) states[5] = 'done';
   else states[5] = 'pending';
-
-  // Phase 6: multi_agent / analyzing
   if (stage === 'multi_agent' || stage === 'analyzing') states[6] = 'active';
   else if (['synthesizing','reporting','complete'].includes(stage)) states[6] = 'done';
   else states[6] = 'pending';
-
-  // Phase 7: timeline (part of reporting/complete)
   if (stage === 'synthesizing') states[7] = 'done';
   else if (stage === 'reporting') states[7] = 'active';
   else if (stage === 'complete') states[7] = 'done';
   else states[7] = 'pending';
-
-  // Phase 8: report synthesis
   if (stage === 'synthesizing') states[8] = 'active';
   else if (stage === 'complete') states[8] = 'done';
   else states[8] = 'pending';
-
   return states;
 }
 
 function getPhaseDetail(phaseNum, d) {
   const stage = d.stage || 'waiting';
   const pp = d.pcap_progress || {};
-
   switch (phaseNum) {
     case 1: {
       const segs = d.alert_results || [];
@@ -506,22 +562,41 @@ function getPhaseDetail(phaseNum, d) {
     case 4: {
       const segs = d.tshark_results || [];
       const count = segs.length;
-      return { status: count ? `${count} PCAPs analyzed with tshark` : (pp.current || ''), chips: count > 10 ? [{segment: `${count} PCAPs processed`, status: 'ok'}] : segs };
+      const ec = d.extraction_counts || {};
+      const ecChips = [];
+      if (ec.dns) ecChips.push({segment: `DNS: ${ec.dns.toLocaleString()}`, status: 'ok'});
+      if (ec.tls) ecChips.push({segment: `TLS: ${ec.tls.toLocaleString()}`, status: 'ok'});
+      if (ec.http) ecChips.push({segment: `HTTP: ${ec.http.toLocaleString()}`, status: 'ok'});
+      if (ec.smb) ecChips.push({segment: `SMB: ${ec.smb.toLocaleString()}`, status: 'ok'});
+      if (ec.rdp) ecChips.push({segment: `RDP: ${ec.rdp.toLocaleString()}`, status: 'ok'});
+      if (ec.tcp_conv) ecChips.push({segment: `TCP conv: ${ec.tcp_conv.toLocaleString()}`, status: 'ok'});
+      const statusText = pp.done && pp.total
+        ? `${pp.done}/${pp.total} PCAPs — ${pp.current || ''}`
+        : (count ? `${count} PCAPs analyzed` : (pp.current || ''));
+      return { status: statusText, chips: ecChips.length ? ecChips : (count > 10 ? [{segment: `${count} PCAPs processed`, status: 'ok'}] : segs) };
     }
     case 5: {
-      if (stage === 'loading_database') return { status: 'Parsing artifacts JSON and inserting into SQLite...', chips: [], showBar: true };
+      const dl = d.db_loading || {};
+      if (stage === 'loading_database' && dl.current_table) {
+        const pct = dl.total ? Math.round((dl.step / dl.total) * 100) : 60;
+        const chips = [{segment: `${dl.current_table}: ${(dl.rows_loaded || 0).toLocaleString()} rows`, status: 'ok'}];
+        return { status: `Loading table ${dl.step}/${dl.total}: ${dl.current_table}...`, chips: chips, showBar: true, barPct: pct };
+      }
+      if (stage === 'loading_database') return { status: 'Initializing database schema...', chips: [], showBar: true, barPct: 10 };
       if (['multi_agent','analyzing','synthesizing','reporting','complete'].includes(stage)) return { status: 'All tables loaded', chips: [] };
       return { status: '', chips: [] };
     }
     case 6: {
-      return { status: '', chips: [], showWorkers: true };
+      const as2 = d.agent_status || {};
+      let agentDetail = '';
+      if (as2.worker_id && as2.status === 'running') agentDetail = `Worker ${as2.worker_id}: ${as2.detail || 'investigating...'}`;
+      else if (as2.worker_id && as2.status === 'completed') agentDetail = `Worker ${as2.worker_id}: ${as2.detail || 'done'}`;
+      return { status: agentDetail, chips: [], showWorkers: true };
     }
-    case 7: {
-      return { status: stage === 'complete' ? 'Timeline assembled' : '', chips: [] };
-    }
+    case 7: return { status: stage === 'complete' ? 'Timeline assembled' : '', chips: [] };
     case 8: {
-      if (stage === 'synthesizing') return { status: 'LLM synthesizer generating executive report...', chips: [] };
-      if (stage === 'complete') return { status: 'Report generated', chips: [] };
+      if (stage === 'synthesizing') return { status: 'Claude Opus 4.6 synthesizing forensic report...', chips: [{segment:'Claude Opus 4.6',status:'active'}] };
+      if (stage === 'complete') return { status: 'Report generated', chips: [{segment:'Claude Opus 4.6',status:'ok'}] };
       return { status: '', chips: [] };
     }
   }
@@ -532,6 +607,7 @@ function getPhaseDetail(phaseNum, d) {
 // RENDER LIVE MONITOR
 // ═══════════════════════════════════════════════
 let startedAtISO = null;
+let lastStage = '';
 
 function renderLive(d) {
   document.getElementById('waiting').style.display = 'none';
@@ -543,14 +619,25 @@ function renderLive(d) {
   startedAtISO = d.started_at;
 
   const stage = d.stage || 'waiting';
+
+  // Stage change notification
+  if (lastStage && lastStage !== stage) {
+    const labels = { preprocessing:'Preprocessing started', loading_database:'Loading database', multi_agent:'Agents investigating', synthesizing:'Synthesizing reports', complete:'Investigation complete' };
+    if (labels[stage]) showToast(labels[stage], stage === 'complete' ? 'success' : 'info');
+  }
+  lastStage = stage;
+
   const badge = document.getElementById('stage-badge');
   const stageLabels = {
     starting: 'STARTING', preprocessing: 'PREPROCESSING', loading_database: 'LOADING DATABASE',
-    multi_agent: 'AGENTS RUNNING', analyzing: 'ANALYZING', synthesizing: 'SYNTHESIZING REPORT',
+    multi_agent: 'AGENTS RUNNING', analyzing: 'ANALYZING', synthesizing: 'SYNTHESIZING REPORTS',
     reporting: 'BUILDING TIMELINE', complete: 'COMPLETE', waiting: 'WAITING'
   };
   badge.textContent = stageLabels[stage] || stage;
   badge.className = 'badge badge-' + stage;
+
+  // KPI row
+  renderKPIs(d);
 
   // Phase pipeline
   const phaseStates = getPhaseStates(d);
@@ -587,19 +674,18 @@ function renderLive(d) {
     if (detail.chips && detail.chips.length) {
       html += `<div class="phase-chips">`;
       detail.chips.forEach(c => {
-        html += `<span class="chip ${c.status === 'ok' ? 'ok' : c.status === 'error' ? 'error' : ''}">${esc(c.segment)}</span>`;
+        const cls = c.status === 'ok' ? 'ok' : c.status === 'error' ? 'error' : c.status === 'active' ? 'active' : '';
+        html += `<span class="chip ${cls}">${esc(c.segment)}</span>`;
       });
       html += `</div>`;
     }
 
     if (detail.showBar) {
-      html += `<div class="db-bar-wrap"><div class="db-bar-fill shimmer" style="width:60%"></div></div>`;
-      html += `<div style="font-size:10px;font-family:var(--font-mono);color:var(--text-dim);margin-top:4px;">Inserting ~3M rows into 13 tables...</div>`;
+      const pct = detail.barPct || 60;
+      html += `<div class="db-bar-wrap"><div class="db-bar-fill shimmer" style="width:${pct}%"></div></div>`;
     }
 
-    if (detail.showWorkers) {
-      html += renderWorkerCards(d);
-    }
+    if (detail.showWorkers) html += renderWorkerCards(d);
 
     html += `</div></div>`;
   });
@@ -612,9 +698,9 @@ function renderLive(d) {
   const llmContainer = document.getElementById('llm-log-container');
   if (llmLog.length) {
     llmSection.style.display = '';
-    const _c = { worker_started: '#00e5ff', worker_completed: '#00e676', backend_failed: '#ff3d00', all_backends_failed: '#ff3d00', rate_limit: '#ffb300', tool_call: '#b388ff', worker_dispatched: '#2979ff', key_rotated: '#ff9f43' };
+    const _c = { worker_started: '#00e5ff', worker_completed: '#00e676', backend_failed: '#ff3d00', all_backends_failed: '#ff3d00', rate_limit: '#ffb300', tool_call: '#b388ff', worker_dispatched: '#2979ff', key_rotated: '#ff9f43', synthesizer_started: '#ffb300', commonstack_report_completed: '#b388ff' };
     llmContainer.innerHTML = llmLog.map(e => {
-      const evt = e.event_type || '';
+      const evt = e.event_type || e.action || '';
       const color = _c[evt] || '#8a9bb2';
       const qid = e.question_id || '';
       let detail = '';
@@ -624,6 +710,8 @@ function renderLive(d) {
       else if (evt === 'tool_call') { const sql = (e.args||{}).sql||''; detail = `<span style="color:#b388ff">SQL</span> Worker ${qid} [iter ${e.iteration||'?'}] ${esc(sql.substring(0,120))}`; }
       else if (evt === 'rate_limit') detail = `<span style="color:#ffb300">RATE_LIMIT</span> Worker ${qid} backoff=${e.backoff_seconds||'?'}s`;
       else if (evt === 'worker_dispatched') detail = `<span style="color:#2979ff">DISPATCH</span> Worker ${qid}: ${esc(e.title||'')}`;
+      else if (evt === 'synthesizer_started') detail = `<span style="color:#ffb300">SYNTH</span> Claude Opus 4.6 report synthesis started`;
+      else if (evt === 'synthesizer_completed' || evt === 'commonstack_report_completed') detail = `<span style="color:#00e676">SYNTH</span> ${esc(evt)}: ${esc(JSON.stringify(e).substring(0,100))}`;
       else detail = `${evt}: ${JSON.stringify(e).substring(0, 120)}`;
       return `<div style="border-left:3px solid ${color};padding:2px 8px;margin:2px 0;background:rgba(255,255,255,0.02);">${detail}</div>`;
     }).join('');
@@ -633,27 +721,72 @@ function renderLive(d) {
   }
 }
 
-function renderWorkerCards(d) {
-  const findings = d.findings || {};
-  const llmLog = d.llm_log || [];
-  const stage = d.stage || '';
+// ═══════════════════════════════════════════════
+// KPI ROW
+// ═══════════════════════════════════════════════
+function renderKPIs(d) {
+  const row = document.getElementById('kpi-row');
+  const stage = d.stage || 'waiting';
+  if (stage === 'waiting' || stage === 'starting') { row.innerHTML = ''; return; }
 
-  let html = '<div class="worker-grid">';
+  const kpis = [];
+
+  // Alerts
+  const alertSegs = d.alert_results || [];
+  if (alertSegs.length) {
+    const total = alertSegs.reduce((s, c) => s + parseInt((c.segment.match(/[\d,]+/) || ['0'])[0].replace(/,/g,''), 10), 0);
+    kpis.push({ value: total.toLocaleString(), label: 'Alerts Processed' });
+  }
+
+  // Zeek records
+  const zeekSegs = d.zeek_results || [];
+  if (zeekSegs.length) {
+    const total = zeekSegs.reduce((s, c) => s + parseInt((c.segment.match(/[\d,]+/) || ['0'])[0].replace(/,/g,''), 10), 0);
+    kpis.push({ value: total.toLocaleString(), label: 'Zeek Records Matched' });
+  }
+
+  // PCAPs
+  const pcapSegs = d.pcap_index_results || [];
+  if (pcapSegs.length) {
+    const pcapCount = pcapSegs.find(s => s.segment.match(/\d+\s*PCAPs/));
+    if (pcapCount) kpis.push({ value: (pcapCount.segment.match(/(\d+)/)||['?'])[0], label: 'PCAPs Analyzed' });
+  }
+
+  // Workers — Claude Opus 4.6 via CommonStack AI
+  const llmLog = d.llm_log || [];
+  const completedWorkers = llmLog.filter(e => e.event_type === 'worker_completed').length;
+  const totalSQLs = llmLog.filter(e => e.event_type === 'tool_call').length;
+  if (completedWorkers > 0) {
+    kpis.push({ value: `${completedWorkers}/4`, label: 'Workers Done' });
+    kpis.push({ value: totalSQLs.toString(), label: 'SQL Queries' });
+  }
+
+  // Findings
+  const findings = d.findings || {};
+  const findingCount = Object.keys(findings).length;
+  if (findingCount > 0) {
+    const evidenceCount = Object.values(findings).reduce((s, f) => s + (f.evidence_count || 0), 0);
+    kpis.push({ value: findingCount.toString(), label: 'Findings' });
+    kpis.push({ value: evidenceCount.toString(), label: 'Evidence Items' });
+  }
+
+  row.innerHTML = kpis.map(k => `<div class="kpi-card"><div class="kpi-value">${k.value}</div><div class="kpi-label">${k.label}</div></div>`).join('');
+}
+
+function _buildWorkerGrid(findings, llmLog, label, labelColor) {
+  let html = `<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:${labelColor};margin:10px 0 6px;font-family:var(--font-mono);">${label}</div>`;
+  html += '<div class="worker-grid">';
   ['A','B','C','D'].forEach(qid => {
     const f = findings[qid];
     const info = WORKER_INFO[qid];
-
-    // Determine worker state
     const dispatched = llmLog.some(e => e.event_type === 'worker_dispatched' && e.question_id === qid);
     const started = llmLog.some(e => e.event_type === 'worker_started' && e.question_id === qid);
     const completed = llmLog.some(e => e.event_type === 'worker_completed' && e.question_id === qid);
     const isRunning = started && !completed;
     const isDone = completed || !!f;
     const isError = f && f.status === 'agent_error';
-
     const cardCls = isDone ? (isError ? 'error' : 'done') : isRunning ? 'running' : '';
 
-    // Count iterations for this worker
     const toolCalls = llmLog.filter(e => e.event_type === 'tool_call' && e.question_id === qid);
     const maxIter = toolCalls.length ? Math.max(...toolCalls.map(e => e.iteration || 0)) : 0;
     const lastQuery = toolCalls.length ? (toolCalls[toolCalls.length-1].args || {}).sql || '' : '';
@@ -666,9 +799,9 @@ function renderWorkerCards(d) {
     html += `</div>`;
 
     if (isRunning || isDone) {
-      const pct = isDone ? 100 : Math.min(100, (maxIter / 20) * 100);
+      const pct = isDone ? 100 : Math.min(100, (maxIter / 30) * 100);
       html += `<div class="worker-progress">`;
-      html += `  <div class="worker-iter">Iteration ${maxIter} / 20 &mdash; ${toolCalls.length} SQL queries</div>`;
+      html += `  <div class="worker-iter">Iteration ${maxIter} / 30 &mdash; ${toolCalls.length} SQL queries</div>`;
       html += `  <div class="worker-iter-bar"><div class="worker-iter-fill" style="width:${pct}%"></div></div>`;
       html += `</div>`;
       if (lastQuery && isRunning) html += `<div class="worker-last-query">${esc(lastQuery.substring(0, 120))}</div>`;
@@ -687,6 +820,12 @@ function renderWorkerCards(d) {
   });
   html += '</div>';
   return html;
+}
+
+function renderWorkerCards(d) {
+  const findings = d.findings || {};
+  const llmLog = d.llm_log || [];
+  return _buildWorkerGrid(findings, llmLog, '▸ Claude Opus 4.6 (CommonStack AI)', 'var(--purple)');
 }
 
 // ═══════════════════════════════════════════════
@@ -715,18 +854,25 @@ const QUESTION_MAP = {
 };
 
 let findingsCache = null;
+
 async function loadFindings() {
   const container = document.getElementById('findings-full-container');
   try {
-    const res = await fetch('findings.json?_=' + Date.now());
+    const res = await fetch('findings_commonstack.json?_=' + Date.now());
     if (!res.ok) throw new Error('not found');
     findingsCache = await res.json();
-    renderFindingsFull(findingsCache);
-  } catch { if (!findingsCache) container.innerHTML = `<div class="findings-empty">No findings data available yet.</div>`; }
+  } catch {
+    container.innerHTML = `<div class="findings-empty">No findings data available yet. Findings are written after Phase 6 completes.</div>`;
+    return;
+  }
+  renderFindingsFull();
 }
 
-function renderFindingsFull(data) {
+function renderFindingsFull() {
   const container = document.getElementById('findings-full-container');
+  const data = findingsCache;
+  if (!data) { container.innerHTML = `<div class="findings-empty">No findings data available yet.</div>`; return; }
+
   const questions = data.questions || data;
   let count = 0, html = '';
   ['A','B','C','D'].forEach(letter => {
@@ -736,10 +882,10 @@ function renderFindingsFull(data) {
     const evidence = f.evidence || [];
     let evidenceHTML = '';
     if (evidence.length) {
-      evidenceHTML = `<div class="fq-section-title">Evidence</div><table class="evidence-table"><thead><tr><th>Source</th><th>Detail</th><th>Timestamp</th></tr></thead><tbody>${evidence.map(e => `<tr><td>${esc(e.source||e.type||'---')}</td><td>${esc(e.detail||e.description||e.value||'---')}</td><td>${esc(e.timestamp||e.ts||'---')}</td></tr>`).join('')}</tbody></table>`;
+      evidenceHTML = `<div class="fq-section-title">Evidence (${evidence.length} items)</div><table class="evidence-table"><thead><tr><th>Source</th><th>Detail</th><th>Timestamp</th></tr></thead><tbody>${evidence.map(e => `<tr><td>${esc(e.source||e.artifact||e.type||'---')}</td><td>${esc(e.description||e.detail||e.value||'---')}</td><td>${esc(e.ts||e.timestamp||'---')}</td></tr>`).join('')}</tbody></table>`;
     }
-    const techniques = f.mitre_techniques || f.techniques || [];
-    let mitreHTML = techniques.length ? `<div class="fq-section-title">MITRE ATT&CK</div><div style="margin-top:6px;">${techniques.map(t => `<span class="fq-mitre-chip">${esc(typeof t==='string'?t:`${t.id||''} ${t.name||''}`)}</span>`).join('')}</div>` : '';
+    const techniques = f.mitre_techniques || f.mitre || f.techniques || [];
+    let mitreHTML = techniques.length ? `<div class="fq-section-title">MITRE ATT&amp;CK</div><div style="margin-top:6px;">${techniques.map(t => `<span class="fq-mitre-chip">${esc(typeof t==='string'?t:`${t.id||''} ${t.name||''}`)}</span>`).join('')}</div>` : '';
     const limitations = f.limitations || [];
     let limHTML = limitations.length ? `<div class="fq-section-title">Limitations</div><ul class="fq-limitations">${limitations.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>` : '';
     const nextSteps = f.next_steps || f.recommendations || [];
@@ -752,17 +898,77 @@ function renderFindingsFull(data) {
 }
 
 // ═══════════════════════════════════════════════
-// TAB 3: REPORT
+// TAB 3: REPORTS
 // ═══════════════════════════════════════════════
+const REPORT_MODEL = { label: 'Claude Opus 4.6 Report', file: 'report_commonstack.md', model: 'Claude Opus 4.6 (CommonStack AI)', badgeClass: 'commonstack' };
 let reportCache = null;
-async function loadReport() {
-  const container = document.getElementById('report-full-container');
+
+async function loadReports() {
   try {
-    const res = await fetch('report.md?_='+Date.now());
+    const res = await fetch(REPORT_MODEL.file + '?_=' + Date.now());
     if (!res.ok) throw new Error('not found');
     reportCache = await res.text();
-    container.innerHTML = `<div class="report-container">${renderMarkdown(reportCache)}</div>`;
-  } catch { if (!reportCache) container.innerHTML = `<div class="report-empty">No report available yet.</div>`; }
+  } catch {
+    reportCache = null;
+  }
+
+  const badge = document.getElementById('reports-count');
+  if (reportCache) { badge.style.display = ''; badge.textContent = '1'; } else badge.style.display = 'none';
+
+  renderReportTabBar();
+  renderActiveReport();
+}
+
+function renderReportTabBar() {
+  const bar = document.getElementById('report-tab-bar');
+  const available = !!reportCache;
+  const dotCls = available ? 'available' : 'unavailable';
+  let html = `<button class="report-tab-btn active" ${!available?'disabled style="opacity:0.4;cursor:not-allowed;"':''}><span class="dot ${dotCls}" style="background:var(--purple);box-shadow:${available?'0 0 6px rgba(179,136,255,0.5)':'none'};"></span>${REPORT_MODEL.label}</button>`;
+  html += `<button class="report-download-btn" onclick="downloadPDF()">&#8681; Download PDF</button>`;
+  bar.innerHTML = html;
+}
+
+function renderActiveReport() {
+  const container = document.getElementById('report-full-container');
+  if (!reportCache) { container.innerHTML = `<div class="report-empty">No report available yet. Report is generated after Phase 8 completes.</div>`; return; }
+  const modelBadge = `<div class="report-model-badge ${REPORT_MODEL.badgeClass}">Generated by ${REPORT_MODEL.model}</div>`;
+  container.innerHTML = `<div class="report-container">${modelBadge}${renderMarkdown(reportCache)}</div>`;
+}
+
+function downloadPDF() {
+  const md = reportCache;
+  if (!md) { showToast('No report available to download', 'info'); return; }
+
+  // Use browser print-to-PDF: open report in a new styled window and trigger print
+  const printWin = window.open('', '_blank');
+  printWin.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${REPORT_MODEL.label} - Apex Global Logistics</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+    body { font-family: 'Inter', system-ui, sans-serif; color: #1a1a2e; line-height: 1.7; padding: 40px 60px; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 24px; font-weight: 700; color: #0a1628; border-bottom: 2px solid #2979ff; padding-bottom: 8px; margin: 28px 0 16px; }
+    h2 { font-size: 18px; font-weight: 600; color: #1a3a5c; margin: 24px 0 10px; }
+    h3 { font-size: 15px; font-weight: 600; color: #2a4a6c; margin: 18px 0 8px; }
+    p { font-size: 13px; margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 12px; }
+    th { text-align: left; padding: 8px; background: #f0f4f8; border-bottom: 2px solid #d0d8e0; font-weight: 600; }
+    td { padding: 8px; border-bottom: 1px solid #e8ecf0; }
+    code { background: #f0f4f8; padding: 1px 6px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+    pre { background: #f0f4f8; padding: 12px; border-radius: 6px; font-size: 11px; overflow-x: auto; }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 20px; font-size: 13px; }
+    li { margin-bottom: 4px; }
+    blockquote { border-left: 3px solid #2979ff; padding: 8px 16px; margin: 12px 0; background: #f8fafc; }
+    strong { color: #0a1628; }
+    hr { border: none; border-top: 1px solid #e0e4e8; margin: 20px 0; }
+    .model-badge { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-bottom: 16px; background: #e8f0fe; color: #1a3a5c; }
+    @media print { body { padding: 20px; } @page { margin: 1.5cm; size: A4; } }
+  </style></head><body>
+  <div class="model-badge">Generated by ${esc(REPORT_MODEL.model)}</div>
+  ${renderMarkdown(md)}
+  </body></html>`);
+  printWin.document.close();
+  setTimeout(() => { printWin.print(); }, 500);
+  showToast('Print dialog opened — save as PDF', 'success');
 }
 
 function renderMarkdown(md) {
@@ -795,30 +1001,48 @@ function renderMarkdown(md) {
 // ═══════════════════════════════════════════════
 const CAT_COLORS = { initial_access:{color:'#ff3d00',label:'Initial Access'}, lateral_movement:{color:'#ffb300',label:'Lateral Movement'}, exfiltration:{color:'#b388ff',label:'Exfiltration'}, payload_delivery:{color:'#2979ff',label:'Payload Delivery'}, c2:{color:'#ff3d00',label:'C2'}, reconnaissance:{color:'#ffb300',label:'Recon'} };
 let timelineCache = null;
+let tlFilter = 'all';
 async function loadTimeline() {
   const container = document.getElementById('timeline-full-container');
   try {
-    const res = await fetch('timeline.json?_='+Date.now());
+    const res = await fetch('timeline_commonstack.json?_='+Date.now());
     if (!res.ok) throw new Error('not found');
     timelineCache = await res.json();
-    renderTimelineFull(timelineCache);
-  } catch { if (!timelineCache) container.innerHTML = `<div class="timeline-empty">No timeline data yet.</div>`; }
+  } catch {
+    container.innerHTML = `<div class="timeline-empty">No timeline data yet.</div>`; return;
+  }
+  renderTimelineFull(timelineCache);
 }
 function renderTimelineFull(data) {
   const container = document.getElementById('timeline-full-container');
   const events = Array.isArray(data) ? data : (data.events || []);
+
   if (!events.length) { container.innerHTML = `<div class="timeline-empty">Timeline is empty.</div>`; return; }
   const cats = [...new Set(events.map(e=>e.category||'default'))];
-  let html = '<div class="timeline-legend">';
+
+  // Filter bar
+  let html = '<div class="tl-filter-bar">';
+  html += `<button class="tl-filter-btn ${tlFilter==='all'?'active':''}" onclick="setTlFilter('all')">All (${events.length})</button>`;
+  cats.forEach(cat => {
+    const count = events.filter(e=>(e.category||'default')===cat).length;
+    html += `<button class="tl-filter-btn ${tlFilter===cat?'active':''}" onclick="setTlFilter('${cat}')">${(CAT_COLORS[cat]||{label:cat}).label} (${count})</button>`;
+  });
+  html += '</div>';
+
+  // Legend
+  html += '<div class="timeline-legend">';
   cats.forEach(cat => { const i = CAT_COLORS[cat]||{color:'#8a9bb2',label:cat}; html += `<div class="legend-item"><div class="legend-dot" style="background:${i.color}"></div>${i.label}</div>`; });
   html += '</div><div class="timeline-vertical">';
-  events.forEach(e => {
+
+  const filtered = tlFilter === 'all' ? events : events.filter(e=>(e.category||'default')===tlFilter);
+  filtered.forEach(e => {
     const cat = e.category||'default'; const cc = CAT_COLORS[cat]?cat:'default';
     html += `<div class="tl-event cat-${cc}"><div class="tl-event-time">${esc((e.timestamp||e.ts||'').substring(0,19))}</div><div class="tl-event-title">${esc(e.title||e.event||'---')}</div><div class="tl-event-desc">${esc(e.summary||e.description||'')}</div>${cat!=='default'?`<span class="tl-event-cat tl-cat-${cc}">${esc((CAT_COLORS[cat]||{label:cat}).label)}</span>`:''}</div>`;
   });
   html += '</div>';
   container.innerHTML = html;
 }
+function setTlFilter(f) { tlFilter=f; if(timelineCache) renderTimelineFull(timelineCache); }
 
 // ═══════════════════════════════════════════════
 // TAB 5: AGENT LOG
@@ -839,8 +1063,11 @@ function renderAgentLog(data) {
   if (!entries.length) { container.innerHTML = `<div class="log-empty">Agent log is empty.</div>`; return; }
   const types = [...new Set(entries.map(e=>e.type||'default'))];
   let html = '<div class="log-filter-bar">';
-  html += `<button class="log-filter-btn ${logFilter==='all'?'active':''}" onclick="setLogFilter('all')">All</button>`;
-  types.forEach(t => html += `<button class="log-filter-btn ${logFilter===t?'active':''}" onclick="setLogFilter('${t}')">${esc(t)}</button>`);
+  html += `<button class="log-filter-btn ${logFilter==='all'?'active':''}" onclick="setLogFilter('all')">All (${entries.length})</button>`;
+  types.forEach(t => {
+    const count = entries.filter(e=>(e.type||'default')===t).length;
+    html += `<button class="log-filter-btn ${logFilter===t?'active':''}" onclick="setLogFilter('${t}')">${esc(t)} (${count})</button>`;
+  });
   html += '</div>';
   const filtered = logFilter === 'all' ? entries : entries.filter(e=>(e.type||'default')===logFilter);
   filtered.forEach(e => {
@@ -854,6 +1081,74 @@ function renderAgentLog(data) {
   container.innerHTML = html;
 }
 function setLogFilter(f) { logFilter=f; if(agentLogCache) renderAgentLog(agentLogCache); }
+
+// ═══════════════════════════════════════════════
+// TAB 6: DB EXPLORER
+// ═══════════════════════════════════════════════
+let dbExplorerLoaded = false;
+async function loadDBExplorer() {
+  if (dbExplorerLoaded) return;
+  const grid = document.getElementById('db-stats-grid');
+  const summaryContainer = document.getElementById('ingest-summary-container');
+
+  // Load ingest summary
+  try {
+    const res = await fetch('ingest_summary.json?_='+Date.now());
+    if (res.ok) {
+      const data = await res.json();
+      dbExplorerLoaded = true;
+
+      // DB table stats
+      const tables = data.db_stats || data.table_counts || {};
+      const maxRows = Math.max(...Object.values(tables).map(Number), 1);
+      grid.innerHTML = Object.entries(tables).sort((a,b) => b[1]-a[1]).map(([name, count]) => {
+        const pct = Math.round((count / maxRows) * 100);
+        const formatted = Number(count).toLocaleString();
+        const isZero = count === 0;
+        return `<div class="db-stat-card" ${isZero?'style="opacity:0.5;"':''}>
+          <div class="db-stat-name">${esc(name)}</div>
+          <div class="db-stat-value" ${isZero?'style="color:var(--error-red);"':''}>${formatted}</div>
+          <div class="db-stat-bar"><div class="db-stat-bar-fill" style="width:${pct}%"></div></div>
+        </div>`;
+      }).join('');
+
+      // Ingest summary detail
+      let summaryHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;">';
+      if (data.alerts) {
+        summaryHtml += `<div><strong style="color:var(--primary-cyan);">Phase 1: Alerts</strong><br>`;
+        summaryHtml += `Categories: ${data.alerts.categories || '?'}<br>`;
+        summaryHtml += `Total alerts: ${(data.alerts.total||0).toLocaleString()}<br>`;
+        summaryHtml += `IOC IPs: ${(data.alerts.ioc_ips||0).toLocaleString()}<br>`;
+        summaryHtml += `Community IDs: ${(data.alerts.community_ids||0).toLocaleString()}</div>`;
+      }
+      if (data.zeek) {
+        summaryHtml += `<div><strong style="color:var(--primary-cyan);">Phase 2: Zeek</strong><br>`;
+        summaryHtml += `Scanned: ${(data.zeek.scanned||0).toLocaleString()}<br>`;
+        summaryHtml += `Matched: ${(data.zeek.matched||0).toLocaleString()}<br>`;
+        const protocols = data.zeek.protocols || {};
+        Object.entries(protocols).forEach(([p,c]) => {
+          const capped = c >= 500000 ? ' <span style="color:var(--warning-amber);">CAPPED</span>' : '';
+          summaryHtml += `${p}: ${Number(c).toLocaleString()}${capped}<br>`;
+        });
+        summaryHtml += `</div>`;
+      }
+      if (data.pcap) {
+        summaryHtml += `<div><strong style="color:var(--primary-cyan);">Phase 3-4: PCAP</strong><br>`;
+        summaryHtml += `Total PCAPs: ${data.pcap.total || '?'}<br>`;
+        summaryHtml += `Analyzed: ${data.pcap.analyzed || '?'}<br>`;
+        const ec = data.pcap.extraction_counts || {};
+        Object.entries(ec).forEach(([k,v]) => summaryHtml += `${k}: ${Number(v).toLocaleString()}<br>`);
+        summaryHtml += `</div>`;
+      }
+      summaryHtml += '</div>';
+      summaryContainer.innerHTML = summaryHtml;
+    } else {
+      grid.innerHTML = '<div style="color:var(--text-dim);padding:40px;text-align:center;">No ingest summary available yet.</div>';
+    }
+  } catch {
+    grid.innerHTML = '<div style="color:var(--text-dim);padding:40px;text-align:center;">Failed to load DB stats.</div>';
+  }
+}
 
 // ═══════════════════════════════════════════════
 // UTILITY & POLLING

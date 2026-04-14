@@ -13,12 +13,40 @@ Evidence chain:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, List, Set
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Set
 
 from case_brief import INVESTIGATION_DIRECTIVES
 from config import AgentConfig
 from models import EvidenceItem, Finding
 from tools.common import is_internal_ip
+
+
+def _parse_ts_iso(ts: str) -> Optional[datetime]:
+    if not ts or not isinstance(ts, str):
+        return None
+    t = ts.strip()
+    if t.endswith("Z"):
+        t = t[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(t)
+    except ValueError:
+        return None
+
+
+def _first_privileged_activity_ts(artifacts: Dict[str, Any]) -> Optional[datetime]:
+    """Earliest DC-style RPC that indicates post-access AD abuse (manual PIVOT_TIME proxy)."""
+    pivot: Optional[datetime] = None
+    for rec in artifacts.get("zeek_dce_rpc", []):
+        dce = (rec.get("zeek_detail") or {}).get("dce_rpc") or {}
+        op = (dce.get("operation") or "").lower()
+        if not op:
+            continue
+        if any(k in op for k in ("samr", "drsgetncchanges", "drsbind", "getncchanges", "netrlogon")):
+            dt = _parse_ts_iso(rec.get("ts", ""))
+            if dt and (pivot is None or dt < pivot):
+                pivot = dt
+    return pivot
 
 
 def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Finding:
@@ -144,6 +172,29 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
                 "dst_geo": {},
                 "_source": "pcap_rdp",
             })
+
+    # Prefer inbound remote-access sessions in the ~30 minutes BEFORE the first
+    # heavy AD/RPC abuse (manual methodology), and drop very-late noise (e.g. weeks after pivot).
+    pivot_dt = _first_privileged_activity_ts(artifacts)
+    if pivot_dt and candidates:
+        window_start = pivot_dt - timedelta(minutes=30)
+        late_cutoff = pivot_dt + timedelta(days=3)
+        in_window = []
+        for rec in candidates:
+            dt = _parse_ts_iso(rec.get("ts", ""))
+            if dt is None:
+                in_window.append(rec)
+                continue
+            if dt > late_cutoff:
+                continue
+            if window_start <= dt <= pivot_dt + timedelta(minutes=15):
+                in_window.append(rec)
+        if in_window:
+            candidates = in_window
+        else:
+            before = [c for c in candidates if (t := _parse_ts_iso(c.get("ts", ""))) is None or t <= pivot_dt + timedelta(hours=2)]
+            if before:
+                candidates = before
 
     if not candidates and not internal_alert_map:
         return Finding(
@@ -324,6 +375,11 @@ def analyze_initial_access(artifacts: Dict[str, Any], config: AgentConfig) -> Fi
     limitations.append(
         "Network evidence can suggest but not conclusively prove successful authentication."
     )
+    if pivot_dt:
+        limitations.append(
+            f"Initial-access candidates were time-bounded using earliest SAMR/DRS-style RPC at "
+            f"{pivot_dt.isoformat()} (±30 min inbound RDP window where possible)."
+        )
     if not src_country:
         limitations.append("Geo information was not available for the source IP.")
 

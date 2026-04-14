@@ -80,6 +80,32 @@ def analyze_lateral_movement(artifacts: Dict[str, Any], config: AgentConfig) -> 
             artifact="zeek_dce_rpc",
         ))
 
+    # SAMR-style operation counts (manual report: SamrLookupDomain, SamrOpenGroup, …)
+    samr_ops: Dict[str, int] = defaultdict(int)
+    for rec in dce_records:
+        op = str(rec.get("zeek_detail", {}).get("dce_rpc", {}).get("operation", "") or "")
+        if op.startswith("Samr") or op.startswith("SAMR"):
+            samr_ops[op] += 1
+    if samr_ops:
+        top_samr = sorted(samr_ops.items(), key=lambda x: -x[1])[:10]
+        summary = "; ".join(f"{n}={c}" for n, c in top_samr)
+        top_op_name = top_samr[0][0]
+        s0 = next(
+            rec for rec in dce_records
+            if rec.get("zeek_detail", {}).get("dce_rpc", {}).get("operation") == top_op_name
+        )
+        evidence.append(EvidenceItem(
+            ts=s0.get("ts", ""),
+            src_ip=s0.get("src_ip", ""),
+            dst_ip=s0.get("dst_ip", ""),
+            protocol="dce_rpc",
+            description=(
+                f"SAMR-class DCERPC operations observed: {len(samr_ops)} distinct operation names, "
+                f"{sum(samr_ops.values())} total events. Top counts: {summary}."
+            ),
+            artifact="zeek_dce_rpc",
+        ))
+
     # ── 1b. High-value DCERPC operation breakdown ─────────────────────────────
     highval_ops: Dict[str, int] = defaultdict(int)
     highval_targets: Dict[str, Set[str]] = defaultdict(set)  # op → unique targets

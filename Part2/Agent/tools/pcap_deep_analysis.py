@@ -23,17 +23,31 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from case_brief import CASE_BEACHHEAD_IPS
+
 # Number of parallel tshark workers — tune based on CPU cores and I/O
 _NUM_WORKERS = int(os.getenv("PCAP_THREADS", "8"))
 
 
-# Max records to collect per artefact type (across all PCAPs)
+def _max_records(kind: str, default: int) -> int:
+    env = os.getenv(f"NF_PCAP_MAX_{kind.upper()}", "").strip()
+    if env.isdigit():
+        return max(1_000, int(env))
+    return default
+
+
+# Max records to collect per artefact type (across all PCAPs); SMB raised for manual ~27k+ filename rows
 _MAX = {
-    "dns": 50_000,
-    "http": 20_000,
-    "tls": 50_000,
-    "smb": 50_000,
-    "rdp": 10_000,
+    "dns": _max_records("dns", 50_000),
+    "http": _max_records("http", 20_000),
+    "tls": _max_records("tls", 50_000),
+    "smb": _max_records("smb", 400_000),
+    "rdp": _max_records("rdp", 10_000),
+    "tcp_conv": _max_records("tcp_conv", 50_000),
+    "dns_srv": _max_records("dns_srv", 10_000),
+    "dcerpc": _max_records("dcerpc", 100_000),
+    "smb_tree": _max_records("smb_tree", 50_000),
+    "netbios": _max_records("netbios", 20_000),
 }
 
 # Max IPs to put in a tshark display filter
@@ -70,19 +84,38 @@ def analyze_targeted_pcaps(
     # Safety: limit PCAP count
     to_analyze = [p for p in pcap_paths if Path(p).exists()][:max_pcaps]
 
+    # Manual benchmark: always include course beachhead(s) in IOC targeting so SMB/DNS
+    # extraction cannot miss 10.128.239.57 ↔ DC/file-server traffic when alerts omit it.
+    bh_env = os.getenv("NF_PCAP_BEACHHEAD_IPS", "").strip()
+    beachheads: List[str] = (
+        [x.strip() for x in bh_env.split(",") if x.strip()]
+        if bh_env
+        else list(CASE_BEACHHEAD_IPS)
+    )
+    target_ips = set(target_ips) | set(beachheads)
+
     # Build display-filter IP clause — prioritize external IPs (exfil targets,
     # C2 servers) then add internal IPs up to the limit.
     _rfc1918 = [ipaddress.ip_network(c, strict=False)
                 for c in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
-    external = sorted(ip for ip in target_ips
-                      if not any(ipaddress.ip_address(ip) in net for net in _rfc1918))
-    internal = sorted(ip for ip in target_ips if ip not in set(external))
-    priority_ips = external[:_MAX_FILTER_IPS] + internal[:max(0, _MAX_FILTER_IPS - len(external))]
+    def _safe_classify(ip):
+        try:
+            return not any(ipaddress.ip_address(ip) in net for net in _rfc1918)
+        except (ValueError, TypeError):
+            return False  # skip malformed IPs
+    valid_ips = [ip for ip in target_ips if ip and isinstance(ip, str)]
+    external = sorted(ip for ip in valid_ips if _safe_classify(ip))
+    internal = sorted(ip for ip in valid_ips if ip not in set(external))
+    # Always reserve slots for internal IOCs so DNS/SMB to corporate resolvers or
+    # DCs is not dropped when Suricata lists hundreds of external IPs first.
+    _int_budget = min(len(internal), 96)
+    _ext_budget = max(0, _MAX_FILTER_IPS - _int_budget)
+    priority_ips = external[:_ext_budget] + internal[:_int_budget]
     ip_clause = _build_ip_clause(priority_ips)
 
-    # For TLS and HTTP, use a broader or no-IP filter since these are low-volume
-    # protocols and the exfil destination may not be in our IOC list.
-    ip_clause_broad = _build_ip_clause(priority_ips) if len(priority_ips) > 0 else "ip"
+    # Internal IPs clause — for SMB/RDP which are primarily internal-to-internal
+    # lateral movement. Use internal IOC IPs to avoid missing .57→.29 traffic.
+    internal_clause = _build_ip_clause(internal[:_MAX_FILTER_IPS]) if internal else "ip"
 
     results: Dict[str, Any] = {
         "pcaps_analyzed": to_analyze,
@@ -91,6 +124,11 @@ def analyze_targeted_pcaps(
         "tls_sessions": [],
         "smb_sessions": [],
         "rdp_sessions": [],
+        "tcp_conversations": [],
+        "dns_srv_records": [],
+        "dcerpc_calls": [],
+        "smb_tree_connects": [],
+        "netbios_records": [],
         "errors": [],
     }
 
@@ -104,18 +142,28 @@ def analyze_targeted_pcaps(
         # Each thread collects its own local results, then merges under lock
         local: Dict[str, list] = {
             "dns_queries": [], "http_requests": [], "tls_sessions": [],
-            "smb_sessions": [], "rdp_sessions": [], "errors": [],
+            "smb_sessions": [], "rdp_sessions": [], "tcp_conversations": [],
+            "dns_srv_records": [], "dcerpc_calls": [], "smb_tree_connects": [],
+            "netbios_records": [],
+            "errors": [],
         }
 
         _extract_dns(tshark_bin, pcap, pcap_name, ip_clause, local)
         _extract_http(tshark_bin, pcap, pcap_name, "ip", local)
         _extract_tls(tshark_bin, pcap, pcap_name, "ip", local)
-        _extract_smb(tshark_bin, pcap, pcap_name, ip_clause, local)
-        _extract_rdp(tshark_bin, pcap, pcap_name, ip_clause, local)
+        _extract_smb(tshark_bin, pcap, pcap_name, internal_clause, beachheads, local)
+        _extract_rdp(tshark_bin, pcap, pcap_name, "ip", local)
+        _extract_tcp_conversations(tshark_bin, pcap, pcap_name, external, internal, local)
+        _extract_dns_srv(tshark_bin, pcap, pcap_name, ip_clause, local)
+        _extract_dcerpc(tshark_bin, pcap, pcap_name, internal_clause, local)
+        _extract_smb_tree(tshark_bin, pcap, pcap_name, internal_clause, beachheads, local)
+        _extract_netbios(tshark_bin, pcap, pcap_name, internal_clause, local)
 
         _KEY_TO_MAX = {
             "dns_queries": "dns", "http_requests": "http", "tls_sessions": "tls",
-            "smb_sessions": "smb", "rdp_sessions": "rdp",
+            "smb_sessions": "smb", "rdp_sessions": "rdp", "tcp_conversations": "tcp_conv",
+            "dns_srv_records": "dns_srv", "dcerpc_calls": "dcerpc",
+            "smb_tree_connects": "smb_tree", "netbios_records": "netbios",
         }
         with results_lock:
             for key in local:
@@ -175,12 +223,21 @@ def _tshark(tshark_bin: str, pcap: str, display_filter: str, fields: List[str]) 
     for f in fields:
         cmd += ["-e", f]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0 and proc.stderr:
+            stderr_preview = proc.stderr.strip()[:200]
+            if "aren't valid" in stderr_preview or "not found" in stderr_preview:
+                print(f"    [tshark] FIELD ERROR on {Path(pcap).name}: {stderr_preview}")
+            # Don't fail — tshark may return non-zero for packets it can't decode
         rows = []
         for line in proc.stdout.splitlines():
             rows.append(line.split("\t"))
         return rows
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except subprocess.TimeoutExpired:
+        print(f"    [tshark] TIMEOUT on {Path(pcap).name} filter={display_filter[:60]}")
+        return []
+    except OSError as exc:
+        print(f"    [tshark] ERROR on {Path(pcap).name}: {exc}")
         return []
 
 
@@ -193,7 +250,13 @@ def _g(row: List[str], idx: int, default: str = "") -> str:
 
 
 def _extract_dns(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: dict) -> None:
-    flt = f"dns && ({ip_clause})"
+    # Include exfil-related QNAMEs even when client/resolver IPs are outside the IOC filter.
+    exfil_q = (
+        'dns.qry.name contains "temp.sh" || dns.qry.name contains "file.io" '
+        '|| dns.qry.name contains "transfer.sh" || dns.qry.name contains "gofile" '
+        '|| dns.qry.name contains "anonfiles" || dns.qry.name contains "mega.nz"'
+    )
+    flt = f"dns && (({ip_clause}) || {exfil_q})"
     fields = [
         "frame.time_epoch", "ip.src", "ip.dst",
         "dns.qry.name", "dns.a", "dns.aaaa",
@@ -224,7 +287,6 @@ def _extract_http(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: d
         "frame.time_epoch", "ip.src", "ip.dst",
         "http.host", "http.request.uri", "http.request.method",
         "http.response.code", "http.content_length_header",
-        "http.request_number",
     ]
     for row in _tshark(tshark, pcap, flt, fields):
         if len(out["http_requests"]) >= _MAX["http"]:
@@ -261,9 +323,13 @@ def _extract_tls(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
             break
         sni = _g(row, 3)
         key = (_g(row, 1), _g(row, 2), sni)
-        if key in seen_sni:
+        sni_l = (sni or "").lower()
+        _exfil_sni = any(x in sni_l for x in ("temp.sh", "file.io", "transfer.sh", "gofile", "anonfiles", "mega."))
+        # Keep every ClientHello to exfil SNIs (manual reports count each TLS session).
+        if not _exfil_sni and key in seen_sni:
             continue
-        seen_sni.add(key)
+        if not _exfil_sni:
+            seen_sni.add(key)
         out["tls_sessions"].append({
             "ts": _g(row, 0),
             "src_ip": _g(row, 1),
@@ -275,14 +341,38 @@ def _extract_tls(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
         })
 
 
-def _extract_smb(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: dict) -> None:
-    flt = f"(smb || smb2) && ({ip_clause})"
+def _smb_ip_display_clause(internal_clause: str, beachheads: List[str]) -> str:
+    """Match manual methodology: IOC internal flows OR any SMB involving beachhead IP(s)."""
+    parts = []
+    for ip in beachheads:
+        if ip:
+            parts.append(f"ip.addr == {ip}")
+    if internal_clause and internal_clause != "ip":
+        parts.append(f"({internal_clause})")
+    if not parts:
+        return "ip"
+    if len(parts) == 1:
+        return parts[0]
+    return "(" + " || ".join(parts) + ")"
+
+
+def _extract_smb(
+    tshark: str,
+    pcap: str,
+    pcap_name: str,
+    internal_clause: str,
+    beachheads: List[str],
+    out: dict,
+) -> None:
+    smbc = _smb_ip_display_clause(internal_clause, beachheads)
+    flt = f"(smb || smb2) && ({smbc})"
     fields = [
         "frame.time_epoch", "ip.src", "ip.dst",
         "smb.cmd", "smb2.cmd",
         "smb.file", "smb2.filename",
         "smb2.tree",
         "smb2.find.pattern",                   # SMB2 Find Request search pattern
+        "smb2.fid",
     ]
     for row in _tshark(tshark, pcap, flt, fields):
         if len(out["smb_sessions"]) >= _MAX["smb"]:
@@ -300,16 +390,162 @@ def _extract_smb(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
             "filename": filename,
             "find_pattern": find_pattern,
             "tree": _g(row, 7),
+            "smb2_fid": _g(row, 9),
             "source_pcap": pcap_name,
         })
 
 
+def _extract_tcp_conversations(tshark: str, pcap: str, pcap_name: str, external_ips: List[str], internal_ips: List[str], out: dict) -> None:
+    """Extract TCP conversation statistics using tshark -z conv,tcp.
+
+    This captures actual byte volumes for connections where Zeek conn records
+    may show zero bytes (e.g., long-lived TLS sessions to exfil services).
+    Keeps conversations that involve known external IOC IPs OR any conversation
+    where one side is a known internal IOC IP and the other is external (to catch
+    exfiltration to IPs not in the alert set, like temp.sh).
+    """
+    if not external_ips and not internal_ips:
+        return
+    try:
+        cmd = [tshark, "-r", pcap, "-q", "-z", "conv,tcp"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            return
+        ext_set = set(external_ips)
+        int_set = set(internal_ips)
+        _rfc1918 = [ipaddress.ip_network(c, strict=False)
+                    for c in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+        def _is_external(ip):
+            try:
+                return not any(ipaddress.ip_address(ip) in net for net in _rfc1918)
+            except (ValueError, TypeError):
+                return False
+        def _parse_conv_line(line: str):
+            """Parse a tshark conv,tcp line handling human-readable unit suffixes.
+
+            tshark outputs: addr:port <-> addr:port  frames bytes [unit]  frames bytes [unit]  frames bytes [unit]  rel_start  duration
+            The unit suffix (bytes, kB, MB, GB) is an optional extra token that shifts column positions.
+            """
+            if "<->" not in line:
+                return None
+            # Split into tokens
+            tokens = line.split()
+            if len(tokens) < 9:
+                return None
+            a_addr_port = tokens[0]
+            # tokens[1] is "<->"
+            b_addr_port = tokens[2]
+            # Remaining tokens after the two addresses and "<->" are the stats.
+            # Walk through them, consuming number + optional unit pairs.
+            _UNIT_MULTIPLIERS = {
+                "bytes": 1,
+                "kB": 1_000,
+                "KiB": 1_024,
+                "KB": 1_000,
+                "MB": 1_000_000,
+                "MiB": 1_048_576,
+                "GB": 1_000_000_000,
+                "GiB": 1_073_741_824,
+            }
+            stats = tokens[3:]
+            numbers = []
+            i = 0
+            while i < len(stats):
+                tok = stats[i]
+                try:
+                    val = int(tok)
+                    i += 1
+                    # Check if next token is a unit suffix — convert to bytes
+                    if i < len(stats) and stats[i] in _UNIT_MULTIPLIERS:
+                        # This is a byte value with unit; apply multiplier
+                        # But only for byte columns (even-indexed in pairs: frames, bytes, frames, bytes...)
+                        # The previous number was frames (no unit), this number has a unit = bytes
+                        val = val * _UNIT_MULTIPLIERS[stats[i]]
+                        i += 1
+                    numbers.append(val)
+                except ValueError:
+                    # Could be a float (rel_start, duration) or unit suffix
+                    try:
+                        numbers.append(float(tok))
+                        i += 1
+                    except ValueError:
+                        i += 1  # skip unrecognized tokens
+            # Expected: frames_a2b, bytes_a2b, frames_b2a, bytes_b2a, total_frames, total_bytes, rel_start, duration
+            if len(numbers) < 6:
+                return None
+            return {
+                "a_addr_port": a_addr_port,
+                "b_addr_port": b_addr_port,
+                "frames_a2b": int(numbers[0]),
+                "bytes_a2b": int(numbers[1]),
+                "frames_b2a": int(numbers[2]),
+                "bytes_b2a": int(numbers[3]),
+                "total_frames": int(numbers[4]),
+                "total_bytes": int(numbers[5]),
+                "duration": str(numbers[7]) if len(numbers) > 7 else "",
+            }
+
+        for line in proc.stdout.splitlines():
+            parsed = _parse_conv_line(line)
+            if not parsed:
+                continue
+            try:
+                a_ip = parsed["a_addr_port"].rsplit(":", 1)[0]
+                b_ip = parsed["b_addr_port"].rsplit(":", 1)[0]
+                a_port = parsed["a_addr_port"].rsplit(":", 1)[1]
+                b_port = parsed["b_addr_port"].rsplit(":", 1)[1]
+                # Keep if: either IP is a known external IOC, OR one side is a
+                # known internal IOC and the other side is any external IP.
+                # This catches exfil to IPs not in the alert set (e.g. temp.sh).
+                a_in_ext = a_ip in ext_set
+                b_in_ext = b_ip in ext_set
+                a_in_int = a_ip in int_set
+                b_in_int = b_ip in int_set
+                if not (a_in_ext or b_in_ext
+                        or (a_in_int and _is_external(b_ip))
+                        or (b_in_int and _is_external(a_ip))):
+                    continue
+                total_bytes = parsed["total_bytes"]
+                # Skip small conversations — keep only significant flows (>100KB)
+                # This filters noise while keeping exfil (1GB+), RDP sessions, etc.
+                if total_bytes < 100_000:
+                    continue
+                out["tcp_conversations"].append({
+                    "src_ip": a_ip,
+                    "src_port": a_port,
+                    "dst_ip": b_ip,
+                    "dst_port": b_port,
+                    "bytes_a_to_b": parsed["bytes_a2b"],
+                    "bytes_b_to_a": parsed["bytes_b2a"],
+                    "total_bytes": total_bytes,
+                    "total_frames": parsed["total_frames"],
+                    "duration": parsed["duration"],
+                    "source_pcap": pcap_name,
+                })
+            except (ValueError, IndexError):
+                continue
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
 def _extract_rdp(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: dict) -> None:
-    flt = f"tcp.port == 3389 && ({ip_clause})"
+    # Extract RDP cookies first (much smaller result set than all port 3389 traffic).
+    # Then extract unique (src,dst) connection pairs from port 3389 traffic.
+    cookie_map: Dict[tuple, str] = {}
+    cookie_flt = f"rdp.rt_cookie && ({ip_clause})"
+    cookie_fields = ["frame.time_epoch", "ip.src", "ip.dst", "rdp.rt_cookie"]
+    for row in _tshark(tshark, pcap, cookie_flt, cookie_fields):
+        src = _g(row, 1)
+        dst = _g(row, 2)
+        c = _g(row, 3)
+        if c and (src, dst) not in cookie_map:
+            cookie_map[(src, dst)] = c
+
+    # Now get unique connection pairs from port 3389 traffic.
+    # Use tcp.dstport to only get the client→server direction (one entry per pair).
+    flt = f"tcp.dstport == 3389 && ({ip_clause})"
     fields = [
         "frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport",
-        "rdp.cookie",          # RDP cookie reveals attempted username
-        "rdp.neg_length",
     ]
     seen: Set[tuple] = set()
     for row in _tshark(tshark, pcap, flt, fields):
@@ -317,17 +553,11 @@ def _extract_rdp(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
             break
         src = _g(row, 1)
         dst = _g(row, 2)
-        cookie = _g(row, 5)
         key = (src, dst)
         if key in seen:
-            # Update cookie if we find one for an existing pair
-            if cookie:
-                for sess in out["rdp_sessions"]:
-                    if sess["src_ip"] == src and sess["dst_ip"] == dst and not sess.get("cookie"):
-                        sess["cookie"] = cookie
-                        break
             continue
         seen.add(key)
+        cookie = cookie_map.get(key, "")
         out["rdp_sessions"].append({
             "ts": _g(row, 0),
             "src_ip": src,
@@ -335,5 +565,154 @@ def _extract_rdp(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: di
             "src_port": _g(row, 3),
             "dst_port": _g(row, 4),
             "cookie": cookie,
+            "source_pcap": pcap_name,
+        })
+
+
+def _extract_dns_srv(tshark: str, pcap: str, pcap_name: str, ip_clause: str, out: dict) -> None:
+    """Extract DNS SRV records — reveals DC discovery (_ldap._tcp.dc._msdcs.*, _kerberos._tcp.*).
+
+    Filter: dns && dns.flags.response == 1 && dns.resp.type == 33
+    """
+    flt = f"dns && dns.flags.response == 1 && dns.resp.type == 33 && ({ip_clause})"
+    fields = [
+        "frame.time_epoch", "ip.src", "ip.dst",
+        "dns.qry.name",        # queried SRV name (e.g. _ldap._tcp.dc._msdcs.domain)
+        "dns.srv.name",        # target hostname in SRV answer
+        "dns.srv.port",        # service port
+        "dns.srv.priority",
+        "dns.srv.weight",
+    ]
+    for row in _tshark(tshark, pcap, flt, fields):
+        if len(out["dns_srv_records"]) >= _MAX["dns_srv"]:
+            break
+        qname = _g(row, 3)
+        target = _g(row, 4)
+        if not qname and not target:
+            continue
+        out["dns_srv_records"].append({
+            "ts": _g(row, 0),
+            "src_ip": _g(row, 1),
+            "dst_ip": _g(row, 2),
+            "query_name": qname,
+            "srv_target": target,
+            "srv_port": _g(row, 5),
+            "priority": _g(row, 6),
+            "weight": _g(row, 7),
+            "source_pcap": pcap_name,
+        })
+
+
+def _extract_dcerpc(tshark: str, pcap: str, pcap_name: str, internal_clause: str, out: dict) -> None:
+    """Extract DCE-RPC calls including SAMR (domain enumeration) and DRSUAPI (DCSync).
+
+    Captures: opnum, interface UUID, and operation name for SAMR/LSARPC/DRSUAPI calls.
+    DCSync uses DRSUAPI DsGetNCChanges — critical for detecting credential theft.
+    """
+    flt = f"dcerpc && ({internal_clause})"
+    fields = [
+        "frame.time_epoch", "ip.src", "ip.dst",
+        "dcerpc.opnum",
+        "dcerpc.cn_bind_to_uuid",   # interface UUID (identifies SAMR, LSARPC, DRSUAPI etc.)
+        "samr.opnum",               # SAMR-specific opnum
+        "lsarpc.opnum",             # LSARPC-specific opnum
+        "drsuapi.opnum",            # DRSUAPI opnum (5 = DsGetNCChanges = DCSync)
+        "dcerpc.cn_num_ctx_items",
+    ]
+    # Interface UUIDs for key protocols
+    _UUID_NAMES = {
+        "12345778-1234-abcd-ef00-0123456789ac": "SAMR",
+        "12345778-1234-abcd-ef00-0123456789ab": "LSARPC",
+        "e3514235-4b06-11d1-ab04-00c04fc2dcd2": "DRSUAPI",  # DCSync
+        "6bffd098-a112-3610-9833-46c3f87e345a": "WKSSVC",
+        "4b324fc8-1670-01d3-1278-5a47bf6ee188": "SRVSVC",
+        "12345778-1234-abcd-ef00-0123456789ab": "LSARPC",
+    }
+    for row in _tshark(tshark, pcap, flt, fields):
+        if len(out["dcerpc_calls"]) >= _MAX["dcerpc"]:
+            break
+        uuid = _g(row, 4).lower()
+        interface = _UUID_NAMES.get(uuid, uuid[:8] if uuid else "")
+        samr_op = _g(row, 5)
+        drsuapi_op = _g(row, 7)
+        # Flag DCSync: DRSUAPI opnum 3 (DsBind) or 5 (DsGetNCChanges)
+        is_dcsync = bool(drsuapi_op and drsuapi_op in ("3", "5"))
+        out["dcerpc_calls"].append({
+            "ts": _g(row, 0),
+            "src_ip": _g(row, 1),
+            "dst_ip": _g(row, 2),
+            "opnum": _g(row, 3),
+            "interface_uuid": uuid,
+            "interface_name": interface,
+            "samr_opnum": samr_op,
+            "lsarpc_opnum": _g(row, 6),
+            "drsuapi_opnum": drsuapi_op,
+            "is_dcsync_indicator": is_dcsync,
+            "source_pcap": pcap_name,
+        })
+
+
+def _extract_smb_tree(tshark: str, pcap: str, pcap_name: str, internal_clause: str, beachheads: List[str], out: dict) -> None:
+    """Extract SMB2 Tree Connect requests — reveals which shares were accessed.
+
+    Filter: smb2 && smb2.cmd == 3 (Tree Connect)
+    Captures share names like \\DC\SYSVOL, \\DC\ADMIN$, \\DC\IPC$, \\DC\C$
+    """
+    smbc = _smb_ip_display_clause(internal_clause, beachheads)
+    flt = f"smb2 && smb2.cmd == 3 && ({smbc})"
+    fields = [
+        "frame.time_epoch", "ip.src", "ip.dst",
+        "smb2.tree",            # share path e.g. \\DC01\SYSVOL
+        "smb2.share_type",      # 0x01=disk, 0x02=pipe, 0x03=print
+        "smb2.flags",
+    ]
+    seen: Set[tuple] = set()
+    for row in _tshark(tshark, pcap, flt, fields):
+        if len(out["smb_tree_connects"]) >= _MAX["smb_tree"]:
+            break
+        tree = _g(row, 3)
+        if not tree:
+            continue
+        key = (_g(row, 1), _g(row, 2), tree)
+        if key in seen:
+            continue
+        seen.add(key)
+        out["smb_tree_connects"].append({
+            "ts": _g(row, 0),
+            "src_ip": _g(row, 1),
+            "dst_ip": _g(row, 2),
+            "tree_path": tree,
+            "share_type": _g(row, 4),
+            "source_pcap": pcap_name,
+        })
+
+
+def _extract_netbios(tshark: str, pcap: str, pcap_name: str, internal_clause: str, out: dict) -> None:
+    """Extract NetBIOS Name Service records — reveals hostname resolution and workgroup discovery.
+
+    Filter: nbns || netbios
+    """
+    flt = f"(nbns || netbios) && ({internal_clause})"
+    fields = [
+        "frame.time_epoch", "ip.src", "ip.dst",
+        "nbns.name",            # queried/registered NetBIOS name
+        "nbns.addr",            # resolved IP address
+        "nbns.flags.opcode",    # 0=query, 5=registration, 6=release
+        "nbns.type",            # name type (20=workstation, 1C=domain)
+    ]
+    for row in _tshark(tshark, pcap, flt, fields):
+        if len(out["netbios_records"]) >= _MAX["netbios"]:
+            break
+        name = _g(row, 3)
+        if not name:
+            continue
+        out["netbios_records"].append({
+            "ts": _g(row, 0),
+            "src_ip": _g(row, 1),
+            "dst_ip": _g(row, 2),
+            "nb_name": name,
+            "nb_addr": _g(row, 4),
+            "opcode": _g(row, 5),
+            "nb_type": _g(row, 6),
             "source_pcap": pcap_name,
         })

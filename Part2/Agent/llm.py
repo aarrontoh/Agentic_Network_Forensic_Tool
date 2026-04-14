@@ -6,6 +6,7 @@ from typing import Iterable
 
 from case_brief import INVESTIGATION_DIRECTIVES
 from models import AnalysisState, Decision
+from openai_env import openai_client_kwargs, openai_uses_custom_base_url
 from prompts import build_planner_prompt
 
 
@@ -53,13 +54,26 @@ class OpenAIReasoner:
                 "The OpenAI SDK is not installed. Run 'python3 -m pip install openai' first."
             ) from exc
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(**openai_client_kwargs(api_key))
         prompt = build_planner_prompt(state, available_actions)
-        response = client.responses.create(
-            model=self.model,
-            input=prompt,
-        )
-        text = response.output_text.strip()
+        # OpenAI-compatible proxies (e.g. Commonstack) typically expose chat.completions only.
+        if openai_uses_custom_base_url():
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You reply with a single JSON object only."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            text = (response.choices[0].message.content or "").strip()
+        else:
+            response = client.responses.create(
+                model=self.model,
+                input=prompt,
+            )
+            text = response.output_text.strip()
         payload = json.loads(text)
         return Decision(payload["next_action"], payload["reason"])
 

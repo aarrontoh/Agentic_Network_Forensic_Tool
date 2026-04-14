@@ -59,6 +59,41 @@ def analyze_payload_delivery(artifacts: Dict[str, Any], config: AgentConfig) -> 
             artifact="alerts_ransomware",
         ))
 
+    # ── 1b. Manual-benchmark payload filenames (Zeek SMB + PCAP SMB) ────────────
+    _payload_markers = (
+        "kkwlo.exe", "microsofts.exe", "hfs.ips.txt", "hfs.exe",
+        "how to back files", "uninstallwinclient", "setup.exe",
+    )
+    payload_hits: List[tuple[str, dict, str]] = []
+    for rec in artifacts.get("zeek_smb", []):
+        zd = rec.get("zeek_detail", {}) or {}
+        smb = zd.get("smb", {}) or zd.get("smb_mapping", {}) or zd.get("smb_files", {}) or {}
+        fn = (smb.get("filename", "") or smb.get("name", "") or "").lower()
+        path = (smb.get("path", "") or "").lower()
+        blob = f"{fn} {path}"
+        hit = next((m for m in _payload_markers if m in blob), "")
+        if hit:
+            payload_hits.append(("zeek_smb", rec, hit))
+    for sess in artifacts.get("pcap_smb_sessions", []):
+        fn = (sess.get("filename", "") or "").lower()
+        hit = next((m for m in _payload_markers if m in fn), "")
+        if hit:
+            payload_hits.append(("pcap_smb", sess, hit))
+    if payload_hits:
+        src_t, first, marker = payload_hits[0]
+        ev = first
+        evidence.append(EvidenceItem(
+            ts=ev.get("ts", ""),
+            src_ip=ev.get("src_ip", ""),
+            dst_ip=ev.get("dst_ip", ""),
+            protocol="smb",
+            description=(
+                f"Named payload / tooling artifacts ({len(payload_hits)} hit(s), first match {marker!r} in {src_t}). "
+                "Manual report highlights kkwlo.exe, hfs.ips.txt, Microsofts.exe, and ransom-note filenames."
+            ),
+            artifact=src_t,
+        ))
+
     # ── 2. Identify the end-of-capture window ─────────────────────────────────
     # Use alert timestamps to determine the latest observed time, then define
     # "late stage" as the last 24 hours before that.

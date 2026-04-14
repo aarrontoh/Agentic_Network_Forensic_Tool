@@ -173,14 +173,23 @@ _CAPINFOS_TS_FMTS = [
 
 
 def _parse_capinfos_ts(ts_str: str) -> Optional[datetime]:
+    s = ts_str.strip()
     for fmt in _CAPINFOS_TS_FMTS:
         try:
-            dt = datetime.strptime(ts_str.strip(), fmt)
+            dt = datetime.strptime(s, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt
         except ValueError:
             continue
+    # Newer capinfos versions output ISO-style timestamps (e.g. "2025-11-18 21:30:11.193932")
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        pass
     return None
 
 
@@ -216,15 +225,19 @@ def select_pcaps(
 
     selected: List[str] = []
     for entry in pcap_index:
+        added = False
         if "earliest" in entry and "latest" in entry:
             pcap_start = _parse_capinfos_ts(entry["earliest"])
             pcap_end = _parse_capinfos_ts(entry["latest"])
             if pcap_start and pcap_end and target_dts:
                 if any(pcap_start <= dt <= pcap_end for dt in target_dts):
                     selected.append(entry["path"])
-                continue
+                    added = True
 
-        if entry.get("date") in target_dates:
+        # Always fall back to filename-derived date if capinfos didn't match.
+        # This handles cases where capinfos reports file-modification times
+        # (e.g. after PCAP redaction) rather than original packet timestamps.
+        if not added and entry.get("date") in target_dates:
             selected.append(entry["path"])
 
     if not selected:
@@ -236,5 +249,14 @@ def select_pcaps(
 
     if not selected:
         selected = [e["path"] for e in pcap_index[:5]]
+
+    # Deduplicate while preserving order
+    seen_paths: set = set()
+    deduped: List[str] = []
+    for p in selected:
+        if p not in seen_paths:
+            seen_paths.add(p)
+            deduped.append(p)
+    selected = deduped
 
     return selected[:max_pcaps]

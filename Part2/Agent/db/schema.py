@@ -205,6 +205,24 @@ CREATE TABLE IF NOT EXISTS pcap_smb (
     filename     TEXT,
     find_pattern TEXT,
     tree         TEXT,
+    smb2_fid     TEXT,
+    source_pcap  TEXT
+);
+
+-- PCAP-extracted TCP conversation statistics (Phase 4)
+-- Captures actual byte volumes from tshark -z conv,tcp
+-- Critical for exfiltration quantification when Zeek conn shows zero bytes
+CREATE TABLE IF NOT EXISTS pcap_tcp_conv (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_ip       TEXT,
+    src_port     TEXT,
+    dst_ip       TEXT,
+    dst_port     TEXT,
+    bytes_a_to_b INTEGER,
+    bytes_b_to_a INTEGER,
+    total_bytes  INTEGER,
+    total_frames INTEGER,
+    duration     TEXT,
     source_pcap  TEXT
 );
 
@@ -220,7 +238,78 @@ CREATE TABLE IF NOT EXISTS pcap_rdp (
     source_pcap  TEXT
 );
 
+-- PCAP-extracted DNS SRV records (Phase 4) — DC/Kerberos discovery
+CREATE TABLE IF NOT EXISTS pcap_dns_srv (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT,
+    src_ip       TEXT,
+    dst_ip       TEXT,
+    query_name   TEXT,
+    srv_target   TEXT,
+    srv_port     TEXT,
+    priority     TEXT,
+    weight       TEXT,
+    source_pcap  TEXT
+);
+
+-- PCAP-extracted DCE-RPC calls (Phase 4) — SAMR/LSARPC/DRSUAPI enumeration + DCSync
+CREATE TABLE IF NOT EXISTS pcap_dcerpc (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                  TEXT,
+    src_ip              TEXT,
+    dst_ip              TEXT,
+    opnum               TEXT,
+    interface_uuid      TEXT,
+    interface_name      TEXT,
+    samr_opnum          TEXT,
+    lsarpc_opnum        TEXT,
+    drsuapi_opnum       TEXT,
+    is_dcsync_indicator INTEGER DEFAULT 0,
+    source_pcap         TEXT
+);
+
+-- PCAP-extracted SMB2 Tree Connect requests (Phase 4) — share access mapping
+CREATE TABLE IF NOT EXISTS pcap_smb_tree (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT,
+    src_ip       TEXT,
+    dst_ip       TEXT,
+    tree_path    TEXT,
+    share_type   TEXT,
+    source_pcap  TEXT
+);
+
+-- PCAP-extracted NetBIOS/NBNS records (Phase 4) — hostname and workgroup discovery
+CREATE TABLE IF NOT EXISTS pcap_netbios (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT,
+    src_ip       TEXT,
+    dst_ip       TEXT,
+    nb_name      TEXT,
+    nb_addr      TEXT,
+    opcode       TEXT,
+    nb_type      TEXT,
+    source_pcap  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pcap_credentials (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    attacker_ip     TEXT,
+    target_ip       TEXT,
+    credential      TEXT,
+    credential_type TEXT,
+    pcap_epoch_rdp  REAL,
+    pcap_epoch_cred REAL,
+    real_ts_rdp     TEXT,
+    real_ts_cred    TEXT,
+    clock_offset    REAL,
+    delta_secs      REAL,
+    evidence_note   TEXT,
+    source_pcap     TEXT
+);
+
 -- Indexes for common query patterns used by agents
+CREATE INDEX IF NOT EXISTS idx_pcap_cred_ip     ON pcap_credentials(attacker_ip);
 CREATE INDEX IF NOT EXISTS idx_alerts_src       ON alerts(src_ip);
 CREATE INDEX IF NOT EXISTS idx_alerts_dst       ON alerts(dst_ip);
 CREATE INDEX IF NOT EXISTS idx_alerts_category  ON alerts(category);
@@ -236,11 +325,31 @@ CREATE INDEX IF NOT EXISTS idx_ssl_dst          ON zeek_ssl(dst_ip);
 
 CREATE INDEX IF NOT EXISTS idx_dce_src          ON zeek_dce_rpc(src_ip);
 CREATE INDEX IF NOT EXISTS idx_dce_op           ON zeek_dce_rpc(operation);
+CREATE INDEX IF NOT EXISTS idx_dce_pipe         ON zeek_dce_rpc(named_pipe);
 
 CREATE INDEX IF NOT EXISTS idx_dns_query        ON zeek_dns(query);
+CREATE INDEX IF NOT EXISTS idx_dns_src          ON zeek_dns(src_ip);
+
+CREATE INDEX IF NOT EXISTS idx_smb_src          ON zeek_smb(src_ip);
+CREATE INDEX IF NOT EXISTS idx_smb_filename     ON zeek_smb(filename);
+CREATE INDEX IF NOT EXISTS idx_smb_ts           ON zeek_smb(ts);
+
+CREATE INDEX IF NOT EXISTS idx_rdp_src          ON zeek_rdp(src_ip);
+CREATE INDEX IF NOT EXISTS idx_rdp_dst          ON zeek_rdp(dst_ip);
+
+CREATE INDEX IF NOT EXISTS idx_conn_ts          ON zeek_conn(ts);
+CREATE INDEX IF NOT EXISTS idx_ssl_ts           ON zeek_ssl(ts);
+
 CREATE INDEX IF NOT EXISTS idx_pcap_tls_sni     ON pcap_tls(sni);
 CREATE INDEX IF NOT EXISTS idx_pcap_smb_file    ON pcap_smb(filename);
 CREATE INDEX IF NOT EXISTS idx_pcap_rdp_src     ON pcap_rdp(src_ip);
+CREATE INDEX IF NOT EXISTS idx_pcap_srv_query   ON pcap_dns_srv(query_name);
+CREATE INDEX IF NOT EXISTS idx_pcap_dcerpc_src  ON pcap_dcerpc(src_ip);
+CREATE INDEX IF NOT EXISTS idx_pcap_dcerpc_if   ON pcap_dcerpc(interface_name);
+CREATE INDEX IF NOT EXISTS idx_pcap_dcerpc_dc   ON pcap_dcerpc(is_dcsync_indicator);
+CREATE INDEX IF NOT EXISTS idx_pcap_smbtree_src ON pcap_smb_tree(src_ip);
+CREATE INDEX IF NOT EXISTS idx_pcap_smbtree_path ON pcap_smb_tree(tree_path);
+CREATE INDEX IF NOT EXISTS idx_pcap_nbns_name   ON pcap_netbios(nb_name);
 """
 
 
@@ -253,6 +362,14 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA_SQL)
+    # Lightweight migrations for existing DB files
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(pcap_smb)").fetchall()}
+        if cols and "smb2_fid" not in cols:
+            conn.execute("ALTER TABLE pcap_smb ADD COLUMN smb2_fid TEXT")
+            conn.commit()
+    except sqlite3.Error:
+        pass
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
@@ -264,6 +381,7 @@ def get_table_stats(conn: sqlite3.Connection) -> dict:
         "alerts", "zeek_conn", "zeek_dns", "zeek_ssl", "zeek_http",
         "zeek_dce_rpc", "zeek_rdp", "zeek_smb",
         "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp",
+        "pcap_tcp_conv",
     ]
     stats = {}
     for t in tables:

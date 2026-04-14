@@ -113,7 +113,10 @@ def _load_cache(ingest_dir: Path, name: str) -> Optional[Any]:
 
 
 def _save_cache(ingest_dir: Path, name: str, data: Any) -> None:
-    _cache_path(ingest_dir, name).write_text(json.dumps(data), encoding="utf-8")
+    target = _cache_path(ingest_dir, name)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(target)  # atomic rename on POSIX
 
 
 # --------------------------------------------------------------------------- #
@@ -311,7 +314,11 @@ def run_ingest(
             if ts:
                 alert_timestamps.append(ts)
 
-    targeted_pcaps = select_pcaps(pcap_index, alert_timestamps)
+    # Select ALL PCAPs for Phase 4 — alert-based filtering was dropping PCAPs
+    # containing temp.sh DNS/TLS, SMB file access, and exfil traffic that
+    # occurred outside alert time windows.  The manual team processed all 129
+    # PCAPs; with 8 tshark threads this is still manageable.
+    targeted_pcaps = [e["path"] for e in pcap_index]
     artifacts.update({
         "pcap_index":     pcap_index,
         "pcap_count":     len(pcap_index),
@@ -347,15 +354,31 @@ def run_ingest(
             def _tshark_progress(done: int, total: int, name: str) -> None:
                 if name != "done":
                     tshark_chip_log.append({"segment": name, "status": "ok"})
+                # Include running extraction totals in progress
+                extraction_counts = {
+                    "dns": len(artifacts.get("pcap_dns_queries", [])),
+                    "tls": len(artifacts.get("pcap_tls_sessions", [])),
+                    "http": len(artifacts.get("pcap_http_requests", [])),
+                    "smb": len(artifacts.get("pcap_smb_sessions", [])),
+                    "rdp": len(artifacts.get("pcap_rdp_sessions", [])),
+                    "tcp_conv": len(artifacts.get("pcap_tcp_conversations", [])),
+                    "dns_srv": len(artifacts.get("pcap_dns_srv_records", [])),
+                    "dcerpc": len(artifacts.get("pcap_dcerpc_calls", [])),
+                    "smb_tree": len(artifacts.get("pcap_smb_tree_connects", [])),
+                    "netbios": len(artifacts.get("pcap_netbios_records", [])),
+                }
+                pct = int(done / total * 100) if total else 0
+                detail = f"[{pct}%] {name}" if name != "done" else "tshark analysis complete"
                 _write_progress(work_dir, "preprocessing", {
                     "done": done, "total": total,
-                    "current": name if name != "done" else "tshark analysis complete",
+                    "current": detail,
                     "phase": "tshark",
                 }, extra={
                     "alert_results":      alert_chips,
                     "zeek_results":       zeek_chips,
                     "pcap_index_results": pcap_index_chips,
                     "tshark_results":     list(tshark_chip_log),
+                    "extraction_counts":  extraction_counts,
                 })
 
             pcap_analysis = analyze_targeted_pcaps(
@@ -365,18 +388,25 @@ def run_ingest(
         else:
             pcap_analysis = {
                 "pcaps_analyzed": [], "dns_queries": [], "http_requests": [],
-                "tls_sessions": [], "smb_sessions": [], "rdp_sessions": [], "errors": [],
+                "tls_sessions": [], "smb_sessions": [], "rdp_sessions": [],
+                "tcp_conversations": [], "dns_srv_records": [], "dcerpc_calls": [],
+                "smb_tree_connects": [], "netbios_records": [], "errors": [],
             }
         _save_cache(ingest_dir, "pcap_analysis", pcap_analysis)
 
     artifacts.update({
-        "pcap_dns_queries":      pcap_analysis.get("dns_queries", []),
-        "pcap_http_requests":    pcap_analysis.get("http_requests", []),
-        "pcap_tls_sessions":     pcap_analysis.get("tls_sessions", []),
-        "pcap_smb_sessions":     pcap_analysis.get("smb_sessions", []),
-        "pcap_rdp_sessions":     pcap_analysis.get("rdp_sessions", []),
-        "pcap_analysis_errors":  pcap_analysis.get("errors", []),
-        "pcaps_deeply_analyzed": pcap_analysis.get("pcaps_analyzed", []),
+        "pcap_dns_queries":       pcap_analysis.get("dns_queries", []),
+        "pcap_http_requests":     pcap_analysis.get("http_requests", []),
+        "pcap_tls_sessions":      pcap_analysis.get("tls_sessions", []),
+        "pcap_smb_sessions":      pcap_analysis.get("smb_sessions", []),
+        "pcap_rdp_sessions":      pcap_analysis.get("rdp_sessions", []),
+        "pcap_tcp_conversations": pcap_analysis.get("tcp_conversations", []),
+        "pcap_dns_srv_records":   pcap_analysis.get("dns_srv_records", []),
+        "pcap_dcerpc_calls":      pcap_analysis.get("dcerpc_calls", []),
+        "pcap_smb_tree_connects": pcap_analysis.get("smb_tree_connects", []),
+        "pcap_netbios_records":   pcap_analysis.get("netbios_records", []),
+        "pcap_analysis_errors":   pcap_analysis.get("errors", []),
+        "pcaps_deeply_analyzed":  pcap_analysis.get("pcaps_analyzed", []),
     })
 
     # Final ingest progress — hand off to agent.py which will write "analyzing"
@@ -406,11 +436,16 @@ def run_ingest(
         "zeek_matched":    artifacts["zeek_matched"],
         "pcap_count":      artifacts["pcap_count"],
         "targeted_pcap_count": len(targeted_pcaps),
-        "pcap_dns_queries":  len(artifacts["pcap_dns_queries"]),
-        "pcap_http_requests": len(artifacts["pcap_http_requests"]),
-        "pcap_tls_sessions": len(artifacts["pcap_tls_sessions"]),
-        "pcap_smb_sessions": len(artifacts["pcap_smb_sessions"]),
-        "pcap_rdp_sessions": len(artifacts["pcap_rdp_sessions"]),
+        "pcap_dns_queries":        len(artifacts["pcap_dns_queries"]),
+        "pcap_http_requests":      len(artifacts["pcap_http_requests"]),
+        "pcap_tls_sessions":       len(artifacts["pcap_tls_sessions"]),
+        "pcap_smb_sessions":       len(artifacts["pcap_smb_sessions"]),
+        "pcap_rdp_sessions":       len(artifacts["pcap_rdp_sessions"]),
+        "pcap_tcp_conversations":  len(artifacts.get("pcap_tcp_conversations", [])),
+        "pcap_dns_srv_records":    len(artifacts.get("pcap_dns_srv_records", [])),
+        "pcap_dcerpc_calls":       len(artifacts.get("pcap_dcerpc_calls", [])),
+        "pcap_smb_tree_connects":  len(artifacts.get("pcap_smb_tree_connects", [])),
+        "pcap_netbios_records":    len(artifacts.get("pcap_netbios_records", [])),
     }
     (Path(work_dir) / "ingest_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"

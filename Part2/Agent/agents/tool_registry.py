@@ -72,11 +72,16 @@ def count_rows(conn: sqlite3.Connection, table: str, where: str = "") -> Dict[st
     allowed_tables = {
         "alerts", "zeek_conn", "zeek_dns", "zeek_ssl", "zeek_http",
         "zeek_dce_rpc", "zeek_rdp", "zeek_smb",
-        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp",
+        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp", "pcap_tcp_conv", "pcap_tcp_conv",
     }
     if table not in allowed_tables:
         return {"error": f"Unknown table '{table}'. Allowed: {sorted(allowed_tables)}"}
 
+    if where:
+        # Block write-like keywords to prevent SQL injection
+        _blocked = {"insert", "update", "delete", "drop", "alter", "create", "attach", "detach"}
+        if any(kw in where.lower().split() for kw in _blocked):
+            return {"error": "WHERE clause contains disallowed keyword."}
     sql = f"SELECT COUNT(*) FROM {table}"
     if where:
         sql += f" WHERE {where}"
@@ -92,7 +97,7 @@ def get_table_info(conn: sqlite3.Connection, table: str, sample_limit: int = 5) 
     allowed_tables = {
         "alerts", "zeek_conn", "zeek_dns", "zeek_ssl", "zeek_http",
         "zeek_dce_rpc", "zeek_rdp", "zeek_smb",
-        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp",
+        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp", "pcap_tcp_conv", "pcap_tcp_conv",
     }
     if table not in allowed_tables:
         return {"error": f"Unknown table '{table}'."}
@@ -122,7 +127,7 @@ TOOL_DECLARATIONS = [
         "description": (
             "Execute a read-only SQL SELECT query against the forensic evidence database. "
             "The database contains tables: alerts, zeek_conn, zeek_dns, zeek_ssl, zeek_http, "
-            "zeek_dce_rpc, zeek_rdp, zeek_smb, pcap_dns, pcap_http, pcap_tls, pcap_smb, pcap_rdp. "
+            "zeek_dce_rpc, zeek_rdp, zeek_smb, pcap_dns, pcap_http, pcap_tls, pcap_smb, pcap_rdp, pcap_tcp_conv. "
             "Returns columns, rows (max 200), and whether results were truncated. "
             "Use this to find specific evidence, correlate IPs, and validate hypotheses. "
             "IMPORTANT: You MUST use this tool to support any claim with real data."

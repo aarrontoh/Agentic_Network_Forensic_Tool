@@ -87,6 +87,7 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
     _HIGH_PRI_CATS = {"c2", "exfiltration", "ransomware", "lateral", "scan"}
 
     buckets: Dict[str, List[dict]] = {c: [] for c in _cats}
+    cat_true_counts: Dict[str, int] = {c: 0 for c in _cats}  # true counts (not capped)
     external_ips: Set[str] = set()
     internal_ips: Set[str] = set()
     community_ids: Set[str] = set()          # all community IDs (for reference)
@@ -105,11 +106,16 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 continue
 
+            # Skip non-alert EVE records (stats, flow, dns, etc.)
+            rule = rec.get("rule", {})
+            if not rule or not rule.get("name"):
+                continue
+
             total += 1
 
             src_ip = rec.get("source", {}).get("ip", "")
             dst_ip = rec.get("destination", {}).get("ip", "")
-            rule = rec.get("rule", {})
+
             rule_name = rule.get("name", "")
             rule_cat = rule.get("category", "")
             cid = rec.get("network", {}).get("community_id", "")
@@ -127,6 +133,7 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
 
             rule_counts[rule_name] = rule_counts.get(rule_name, 0) + 1
             cat = _classify(rule_name, rule_cat)
+            cat_true_counts[cat] += 1
 
             # Only keep community IDs from high-priority categories for Zeek grep
             if cid and cat in _HIGH_PRI_CATS:
@@ -179,7 +186,7 @@ def read_alerts(alert_json_path: str, internal_networks) -> Dict[str, Any]:
         "infra_ips": sorted(infra_ips),            # excluded from grep (for reporting)
         "community_ids": sorted(highpri_community_ids),  # only high-priority for Zeek grep
         "community_ids_all": sorted(community_ids),      # full set for reference
-        "categories": {c: len(buckets[c]) for c in _cats},
+        "categories": cat_true_counts,
         "top_rules": [{"name": n, "count": cnt} for n, cnt in top_rules],
         "alerts_by_category": buckets,
     }

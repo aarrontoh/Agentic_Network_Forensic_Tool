@@ -24,24 +24,36 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from models import EvidenceItem, Finding
+from openai_env import openai_client_kwargs
 from agents.tool_registry import TOOL_DECLARATIONS, dispatch_tool
 
 # Maximum tool-calling iterations before forcing the agent to conclude
-_MAX_ITERATIONS = 20
+_MAX_ITERATIONS = 30
+
+# Minimum iterations before submit_finding is accepted — forces thorough investigation
+_MIN_ITERATIONS = 20
 
 # Retry settings for rate-limit (429) errors
-_MAX_RETRIES = 5
-_INITIAL_BACKOFF = 15  # seconds
+_MAX_RETRIES = 10
+_INITIAL_BACKOFF = 20  # seconds
 _BACKOFF_MULTIPLIER = 2
+_MAX_BACKOFF = 300  # seconds — wait up to 5 min per retry for persistent rate limits
 
+
+# Minimum evidence items required before a finding is accepted
+_MIN_EVIDENCE_ITEMS = 15
 
 # The submit_finding tool declaration — agents call this to return results
 _SUBMIT_FINDING_DECL = {
     "name": "submit_finding",
     "description": (
-        "Submit your final finding for this investigation question. "
-        "Call this ONLY after you have gathered sufficient evidence via query_db. "
-        "Every claim in your summary MUST be supported by data from your queries."
+        f"Submit your final structured finding. "
+        f"REQUIREMENTS BEFORE CALLING THIS: "
+        f"(1) You must have completed ALL investigation steps in your prompt — do not skip any. "
+        f"(2) evidence_items MUST contain at least {_MIN_EVIDENCE_ITEMS} items, each with a real exact timestamp from SQL results. "
+        f"(3) Every IP, count, byte value, and timestamp in summary MUST come from a tool query result — no estimates. "
+        f"(4) summary must be at least 300 words covering all steps. "
+        f"If you have not met these requirements, keep querying instead of calling this."
     ),
     "parameters": {
         "type": "object",
@@ -135,15 +147,52 @@ def _get_openai_client():
         raise RuntimeError("OPENAI_API_KEY is required for OpenAI backend.")
     try:
         from openai import OpenAI
-        return OpenAI(api_key=api_key)
+        return OpenAI(**openai_client_kwargs(api_key))
     except ImportError:
         raise RuntimeError("openai package is required. Run: pip install openai")
 
 
-def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, log_callback):
-    """OpenAI function-calling loop for gpt-4o."""
+def _prune_openai_messages(messages: list, keep_recent: int = 20) -> list:
+    """
+    Trim conversation history to keep token count manageable.
+    Always preserves messages[0] (system) and messages[1] (initial user prompt).
+    Keeps the most recent `keep_recent` messages after that.
+    Pruning at message boundaries prevents orphaned tool_call/tool_result pairs.
+    """
+    anchor = messages[:2]
+    tail = messages[2:]
+    if len(tail) <= keep_recent:
+        return messages
+    # Drop from the front of tail, but never leave an orphaned assistant message
+    # (assistant with tool_calls must be followed by its tool results)
+    trimmed = tail[-keep_recent:]
+    # If first message in trimmed is a tool result (not system/user/assistant), drop it
+    while trimmed and trimmed[0].get("role") == "tool":
+        trimmed = trimmed[1:]
+    return anchor + trimmed
+
+
+def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, log_callback,
+                       api_key: str = "", base_url: str = "",
+                       all_cs_keys: list = None, cs_key_idx: list = None):
+    """OpenAI-compatible function-calling loop. Works for OpenAI and any compatible API (e.g. CommonStack).
+
+    all_cs_keys: full list of CommonStack API keys for mid-worker rotation on credit exhaustion.
+    cs_key_idx:  mutable single-element list [int] tracking current key index (shared state).
+    """
     model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
-    client = _get_openai_client()
+    all_cs_keys = all_cs_keys or []
+    cs_key_idx = cs_key_idx if cs_key_idx is not None else [0]
+    # Build client — use explicit params if provided, else fall back to env
+    from openai import OpenAI
+    if api_key or base_url:
+        _key = api_key or os.getenv("OPENAI_API_KEY", "")
+        _kwargs: dict = {"api_key": _key, "timeout": 300}
+        if base_url:
+            _kwargs["base_url"] = base_url
+        client = OpenAI(**_kwargs)
+    else:
+        client = _get_openai_client()
     tools = _build_openai_tools()
 
     messages = [
@@ -170,7 +219,10 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 "Call submit_finding immediately."
             )})
 
-        # Implementation with robust truncation handling
+        # Prune old context to stay within TPM limits (keep last 20 messages)
+        messages = _prune_openai_messages(messages, keep_recent=20)
+
+        # Implementation with robust truncation handling + API key rotation
         response = None
         backoff = _INITIAL_BACKOFF
         for attempt in range(_MAX_RETRIES + 1):
@@ -186,12 +238,27 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
             except Exception as api_err:
                 err_str = str(api_err).lower()
                 is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
+                is_exhausted = "402" in err_str or "insufficient balance" in err_str or "credit" in err_str or "quota" in err_str
+
+                if is_exhausted:
+                    # Key out of credits — rotate to next key immediately
+                    if all_cs_keys and cs_key_idx[0] + 1 < len(all_cs_keys):
+                        cs_key_idx[0] += 1
+                        new_key = all_cs_keys[cs_key_idx[0]]
+                        print(f"    [Worker {question_id}] Key exhausted (credits) — rotating to key {cs_key_idx[0] + 1}/{len(all_cs_keys)}")
+                        from openai import OpenAI as _OAI
+                        client = _OAI(api_key=new_key, base_url=base_url or None, timeout=300)
+                        backoff = _INITIAL_BACKOFF
+                        continue
+                    else:
+                        raise RuntimeError(f"All CommonStack API keys exhausted: {err_str[:200]}")
+
                 if is_rate_limit and attempt < _MAX_RETRIES:
                     if log_callback:
                         log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
                     print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
                     time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
                     continue
                 raise
 
@@ -220,21 +287,55 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 log_callback("tool_call", {"question_id": question_id, "iteration": iteration, "tool": tool_name, "args": _truncate_args(tool_args)})
 
             if tool_name == "submit_finding":
-                finding_result = tool_args
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"status": "accepted"})})
-                break
+                evidence_items = tool_args.get("evidence_items", [])
+                n_evidence = len(evidence_items) if isinstance(evidence_items, list) else 0
+                rejection_reasons = []
+                if iteration < _MIN_ITERATIONS:
+                    rejection_reasons.append(
+                        f"Only {iteration}/{_MIN_ITERATIONS} minimum investigation steps completed — keep querying."
+                    )
+                if n_evidence < _MIN_EVIDENCE_ITEMS:
+                    rejection_reasons.append(
+                        f"Only {n_evidence}/{_MIN_EVIDENCE_ITEMS} required evidence items provided. "
+                        f"You need {_MIN_EVIDENCE_ITEMS - n_evidence} more items. Each must have a real exact timestamp, src_ip, dst_ip, and description from your SQL results."
+                    )
+                if rejection_reasons:
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({
+                        "status": "rejected",
+                        "reasons": rejection_reasons,
+                        "instruction": (
+                            "Do NOT retry submit_finding yet. Continue your investigation: "
+                            "query tables you haven't checked, drill into specific IPs and timestamps, "
+                            "quantify byte volumes, map each attack phase with exact timestamps. "
+                            "Every evidence item must be a distinct event with a real timestamp from SQL."
+                        ),
+                    })})
+                else:
+                    finding_result = tool_args
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"status": "accepted"})})
+                    break
             else:
                 result = dispatch_tool(conn, tool_name, tool_args)
-                # Optimization: truncate before full serialization
-                if isinstance(result.get("rows"), list) and len(result["rows"]) > 30:
-                    result["rows"] = result["rows"][:30]
-                    result["truncated"] = True
-                    result["note"] = "Showing first 30 rows. Use LIMIT for more."
-
-                result_str = json.dumps(result, default=str)
-                # Hard limit on tool response size for OpenAI safety
+                # Progressively truncate rows to fit within token limits
+                if isinstance(result.get("rows"), list):
+                    for max_rows in (50, 30, 15):
+                        if len(result["rows"]) > max_rows:
+                            result["rows"] = result["rows"][:max_rows]
+                            result["truncated"] = True
+                            result["note"] = f"Showing first {max_rows} rows. Use LIMIT/WHERE for specifics."
+                        result_str = json.dumps(result, default=str)
+                        if len(result_str) <= 6000:
+                            break
+                    else:
+                        result_str = json.dumps(result, default=str)
+                else:
+                    result_str = json.dumps(result, default=str)
+                # Final safety truncation — keep valid JSON by summarizing
                 if len(result_str) > 6000:
-                    result_str = result_str[:6000] + "... [TRUNCATED]"
+                    result["rows"] = result.get("rows", [])[:5]
+                    result["truncated"] = True
+                    result["note"] = "Response too large. Only 5 rows shown. Use more specific queries."
+                    result_str = json.dumps(result, default=str)[:6000]
 
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
 
@@ -422,17 +523,32 @@ def _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 log_callback("tool_call", {"question_id": question_id, "iteration": iteration, "tool": tool_name, "args": _truncate_args(tool_args)})
 
             if tool_name == "submit_finding":
-                finding_result = tool_args
-                fn_responses.append(types.Part.from_function_response(name="submit_finding", response={"status": "accepted"}))
-                break
+                if iteration < _MIN_ITERATIONS:
+                    fn_responses.append(types.Part.from_function_response(name="submit_finding", response={
+                        "status": "rejected",
+                        "reason": (
+                            f"You have only completed {iteration} of a minimum {_MIN_ITERATIONS} investigation steps. "
+                            "You MUST continue investigating before submitting. "
+                            "Go back to your investigation strategy and complete the remaining steps — "
+                            "check tables you haven't queried yet, drill into specifics, quantify byte counts, "
+                            "map timestamps precisely, and aim for 15-20 evidence items with exact timestamps."
+                        ),
+                    }))
+                else:
+                    finding_result = tool_args
+                    fn_responses.append(types.Part.from_function_response(name="submit_finding", response={"status": "accepted"}))
+                    break
             else:
                 result = dispatch_tool(conn, tool_name, tool_args)
-                result_str = json.dumps(result, default=str)
-                if len(result_str) > 8000:
-                    if isinstance(result.get("rows"), list) and len(result["rows"]) > 30:
-                        result["rows"] = result["rows"][:30]
+                # Progressively truncate to fit Gemini context limits
+                if isinstance(result.get("rows"), list):
+                    for max_rows in (50, 30, 15, 5):
+                        result_str = json.dumps(result, default=str)
+                        if len(result_str) <= 8000:
+                            break
+                        result["rows"] = result["rows"][:max_rows]
                         result["truncated"] = True
-                        result["note"] = "Showing first 30 rows. Use LIMIT in SQL for precise control."
+                        result["note"] = f"Showing first {max_rows} rows. Use LIMIT in SQL for precise control."
                 fn_responses.append(types.Part.from_function_response(name=tool_name, response=result))
 
         messages.append({"role": "user", "parts": fn_responses})
@@ -511,7 +627,7 @@ def _run_deepseek_worker(conn, question_id, title, mitre, system_prompt, model, 
                         log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
                     print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
                     time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
                     continue
                 raise
 
@@ -626,7 +742,7 @@ def _run_groq_worker(conn, question_id, title, mitre, system_prompt, model, log_
                         log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
                     print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
                     time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
                     continue
                 raise
 
@@ -725,7 +841,7 @@ def _run_together_worker(conn, question_id, title, mitre, system_prompt, model, 
                         log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
                     print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
                     time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
                     continue
                 raise
 
@@ -822,7 +938,7 @@ def _run_sambanova_worker(conn, question_id, title, mitre, system_prompt, model,
                         log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
                     print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
                     time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, 120)
+                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
                     continue
                 raise
 
@@ -915,7 +1031,7 @@ def _get_fallback_order() -> List[tuple]:
 
 _BACKEND_RUNNERS = {
     "openai": lambda *a: _run_openai_worker(*a),
-    # Gemini and Groq runners are disabled
+    "gemini": lambda *a: _run_gemini_worker(*a),
 }
 
 
@@ -927,14 +1043,29 @@ def run_worker(
     system_prompt: str,
     model: str = "",
     log_callback=None,
+    backend_config: Optional[Dict[str, str]] = None,
 ) -> Finding:
     """
-    Run a single worker agent investigation loop with automatic fallback.
+    Run a single worker agent investigation loop.
 
-    Tries the primary backend first. If it fails, automatically falls back
-    to other configured backends. All attempts and failures are logged.
+    backend_config overrides env-based backend selection:
+        {"backend": "openai", "api_key": "sk-...", "model": "gpt-4o", "base_url": "https://..."}
+    If backend_config is None, falls back to env-based _get_fallback_order().
     """
-    fallback_order = _get_fallback_order()
+    if backend_config:
+        # Explicit backend override — build a single-entry fallback list
+        fallback_order = [(
+            backend_config.get("backend", "openai"),
+            backend_config.get("model", os.getenv("OPENAI_MODEL", "gpt-4o")),
+            backend_config.get("api_key", ""),
+            0,
+        )]
+        # Temporarily patch the openai client factory for this call if base_url is set
+        _override_base_url = backend_config.get("base_url", "")
+    else:
+        fallback_order = _get_fallback_order()
+        _override_base_url = ""
+
     failed_backends = []
 
     for i, (backend, backend_model, api_key, key_idx) in enumerate(fallback_order):
@@ -974,8 +1105,22 @@ def run_worker(
             })
 
         try:
-            runner = _BACKEND_RUNNERS[backend]
-            finding_result, iteration = runner(conn, question_id, title, mitre, system_prompt, backend_model, log_callback)
+            runner = _BACKEND_RUNNERS.get(backend, _BACKEND_RUNNERS["openai"])
+            if _override_base_url and backend == "openai":
+                # Inject custom base_url (e.g. CommonStack) into the openai runner
+                # Pass full key list + mutable index for mid-worker key rotation
+                _all_cs_keys = backend_config.get("all_keys", []) if backend_config else []
+                _cs_key_idx = [0]
+                # Find current key's index in all_keys so rotation starts from right place
+                if _all_cs_keys and api_key in _all_cs_keys:
+                    _cs_key_idx = [_all_cs_keys.index(api_key)]
+                finding_result, iteration = _run_openai_worker(
+                    conn, question_id, title, mitre, system_prompt, backend_model, log_callback,
+                    api_key=api_key, base_url=_override_base_url,
+                    all_cs_keys=_all_cs_keys, cs_key_idx=_cs_key_idx,
+                )
+            else:
+                finding_result, iteration = runner(conn, question_id, title, mitre, system_prompt, backend_model, log_callback)
         except Exception as e:
             error_msg = str(e)
             # Shorten common error messages for display

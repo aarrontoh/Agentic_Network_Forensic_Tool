@@ -37,6 +37,13 @@ from typing import Any, Callable, Dict, List, Optional, Set
 MAX_PER_PROTOCOL = 500_000
 _KNOWN_PROTOCOLS = ("conn", "connection", "dns", "ssl", "http", "dce_rpc", "rdp", "smb", "smb_mapping", "smb_files", "weird", "files", "x509", "kerberos", "dhcp", "notice")
 
+# Substrings that pull Zeek lines via grep even when neither IP is in the Suricata IOC set
+# (e.g. workstation→resolver DNS for temp.sh). Python verification still applies below.
+_EXFIL_GREP_MARKERS = (
+    "temp.sh", "file.io", "transfer.sh", "anonfiles", "gofile",
+    "filetransfer.io", "we.tl", "mega.nz",
+)
+
 _EMPTY_RECORDS = lambda: {p: [] for p in list(_KNOWN_PROTOCOLS) + ["other"]}  # noqa: E731
 
 
@@ -99,7 +106,37 @@ def _write_pattern_file(ioc_ips: Set[str], ioc_community_ids: Set[str]) -> str:
         for ip in sorted(ioc_ips):
             if ip:
                 fh.write(f'"{ip}"\n')
+        for marker in _EXFIL_GREP_MARKERS:
+            fh.write(marker + "\n")
     return path
+
+
+def _record_has_exfil_network_marker(rec: dict) -> bool:
+    """True if DNS question, TLS SNI, or HTTP host/URI references a known exfil domain."""
+    def _hit(s: str) -> bool:
+        sl = (s or "").lower()
+        return any(m in sl for m in _EXFIL_GREP_MARKERS)
+
+    dns = rec.get("dns", {}) or {}
+    q = dns.get("question")
+    if isinstance(q, dict) and _hit(q.get("name", "")):
+        return True
+    if isinstance(dns.get("query"), str) and _hit(dns["query"]):
+        return True
+
+    tls = rec.get("tls", {}) or {}
+    if _hit(tls.get("server_name", "")):
+        return True
+    zeek = rec.get("zeek", {}) or {}
+    sslz = zeek.get("ssl", {}) if isinstance(zeek, dict) else {}
+    if isinstance(sslz, dict) and _hit(sslz.get("server_name", "")):
+        return True
+
+    url = rec.get("url", {}) or {}
+    if _hit(str(url.get("domain", ""))) or _hit(str(url.get("original", ""))):
+        return True
+
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -115,9 +152,37 @@ def _process_lines(
 ) -> Dict[str, Any]:
     import random
     records: Dict[str, List[dict]] = _EMPTY_RECORDS()
+    # Protected records: exfil-related records that must NEVER be dropped
+    # by reservoir sampling.  These are rare (tens of records) but critical
+    # for exfiltration quantification (temp.sh DNS, TLS sessions, etc.).
+    protected: Dict[str, List[dict]] = _EMPTY_RECORDS()
     # Track how many matched records we've seen per bucket (for reservoir sampling)
     bucket_seen: Dict[str, int] = {k: 0 for k in records}
     scanned = matched = 0
+
+    # Known exfil destination IPs — records involving these are protected
+    _EXFIL_IPS = {
+        "51.91.79.17", "65.22.162.9", "65.22.160.9",   # temp.sh
+        "144.76.136.153", "144.76.136.154",             # file.io
+        "95.216.22.32",                                  # transfer.sh
+    }
+
+    # Beachhead IPs — external connections TO/FROM these are protected from
+    # sampling because they contain attacker RDP sessions, return sessions,
+    # and other critical initial-access / deployment evidence.
+    from case_brief import CASE_BEACHHEAD_IPS
+    _BEACHHEAD_IPS = set(CASE_BEACHHEAD_IPS)
+
+    # Fast external-IP check using string prefixes instead of ipaddress module.
+    # ipaddress.ip_address() on every record (9M+) was causing OOM/hang.
+    _INTERNAL_PREFIXES = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                          "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                          "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                          "172.30.", "172.31.", "192.168.", "127.", "0.")
+    def _is_external_ip(ip: str) -> bool:
+        return bool(ip) and not ip.startswith(_INTERNAL_PREFIXES)
+
+    MAX_PROTECTED_PER_BUCKET = 10_000  # safety cap on protected records
 
     for raw_line in line_iter:
         # Handle both bytes (binary Popen stdout) and str (text fallback)
@@ -140,11 +205,15 @@ def _process_lines(
         dst_ip = rec.get("destination", {}).get("ip", "")
         cid = rec.get("network", {}).get("community_id", "")
 
-        # Exact Python-side verification eliminates any grep false positives
+        is_exfil_marker = _record_has_exfil_network_marker(rec)
+
+        # Exact Python-side verification eliminates any grep false positives.
+        # Also keep DNS/TLS/HTTP rows that only match on exfil hostnames (no IOC IP on the line).
         if not (
             (src_ip and src_ip in ioc_ips)
             or (dst_ip and dst_ip in ioc_ips)
             or (cid and cid in ioc_community_ids)
+            or is_exfil_marker
         ):
             continue
 
@@ -153,6 +222,31 @@ def _process_lines(
         bucket = log_type if log_type in records else "other"
 
         normalized = normalize_zeek_record(rec)
+
+        # Protect rare but critical records from reservoir sampling:
+        # 1. Exfil-related: DNS/TLS/HTTP for temp.sh etc., conn to exfil IPs
+        # 2. Beachhead-external RDP/SSL: external sessions to beachhead carry
+        #    attacker cookies, return sessions, etc. — conn records are too
+        #    numerous (52K+ spray) so only protect rdp/ssl/kerberos log types.
+        is_exfil_ip = (src_ip in _EXFIL_IPS or dst_ip in _EXFIL_IPS)
+        is_beachhead_external = False
+        if _BEACHHEAD_IPS and bucket in ("rdp", "ssl", "kerberos"):
+            # Protect ALL external rdp/ssl/kerberos records involving beachhead
+            if src_ip in _BEACHHEAD_IPS and _is_external_ip(dst_ip):
+                is_beachhead_external = True
+            elif dst_ip in _BEACHHEAD_IPS and _is_external_ip(src_ip):
+                is_beachhead_external = True
+        elif _BEACHHEAD_IPS and bucket in ("conn", "connection"):
+            # For conn: only protect external connections on RDP port (3389)
+            # to avoid protecting millions of C2/DNS conn records
+            dst_port = rec.get("destination", {}).get("port", 0)
+            if dst_ip in _BEACHHEAD_IPS and dst_port == 3389 and _is_external_ip(src_ip):
+                is_beachhead_external = True
+        if is_exfil_marker or is_exfil_ip or is_beachhead_external:
+            if len(protected[bucket]) < MAX_PROTECTED_PER_BUCKET:
+                protected[bucket].append(normalized)
+            continue  # don't count toward reservoir sampling budget
+
         bucket_seen[bucket] += 1
         n = bucket_seen[bucket]
 
@@ -166,6 +260,10 @@ def _process_lines(
             j = random.randint(0, n - 1)
             if j < MAX_PER_PROTOCOL:
                 records[bucket][j] = normalized
+
+    # Merge protected records back into the main buckets (they bypass the cap)
+    for bucket in records:
+        records[bucket].extend(protected[bucket])
 
     # Sort each bucket by timestamp so the DB has chronological order
     for bucket in records:
@@ -242,7 +340,10 @@ def search_zeek(
                 progress_cb,
                 progress_interval=50_000,   # grep output is already filtered
             )
-            proc.wait()
+            rc = proc.wait()
+            if rc == 2:
+                import warnings
+                warnings.warn(f"grep/rg returned exit code 2 (error) — results may be incomplete", RuntimeWarning)
             return result
 
         finally:

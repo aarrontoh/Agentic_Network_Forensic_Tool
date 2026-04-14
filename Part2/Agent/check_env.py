@@ -18,6 +18,12 @@ def check_env():
     else:
         print("⚠️ OpenAI API Key: Not found in .env")
 
+    openai_base = os.getenv("OPENAI_BASE_URL", "").strip()
+    if openai_base:
+        print(f"✅ OPENAI_BASE_URL: {openai_base}")
+    else:
+        print("ℹ️ OPENAI_BASE_URL: (not set — using default OpenAI API host)")
+
     if gemini_key:
         print(f"✅ Gemini API Key: Loaded (Starts with {gemini_key[:6]}...)")
     else:

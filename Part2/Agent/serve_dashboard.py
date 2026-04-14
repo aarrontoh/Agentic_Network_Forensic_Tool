@@ -29,12 +29,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     # Files served directly from the case output directory
     _CASE_FILES = {
-        "/progress.json":       "progress.json",
-        "/findings.json":       "findings.json",
-        "/timeline.json":       "timeline.json",
-        "/report.md":           "report.md",
-        "/agent_log.json":      "agent_log.json",
-        "/ingest_summary.json": "ingest_summary.json",
+        "/progress.json":               "progress.json",
+        "/findings_commonstack.json":   "findings_commonstack.json",
+        "/timeline_commonstack.json":   "timeline_commonstack.json",
+        "/report_commonstack.md":       "report_commonstack.md",
+        "/agent_log.json":              "agent_log.json",
+        "/ingest_summary.json":         "ingest_summary.json",
     }
 
     def do_GET(self) -> None:
