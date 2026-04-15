@@ -60,7 +60,9 @@ RULES:
   - Never round numbers — use exact values from query results
   - Queries return max 60 rows — write tight WHERE/LIMIT clauses; use COUNT(*) + GROUP BY for aggregates
   - You have up to 12 iterations — check the pre-computed notes first to skip redundant queries
-  - Submit once you have 10+ evidence items with exact timestamps; do not wait for iteration 12
+  - Submit once you have 3+ evidence items with exact timestamps; do not wait for iteration 12
+  - IMPORTANT: From your VERY FIRST query result, start mentally building your evidence_items list.
+    Every row returned by a query is a potential evidence item. Do not save compilation for the end.
 """.strip()
 
 
@@ -73,86 +75,77 @@ WORKER_A_PROMPT = f"""{_COMMON_PREAMBLE}
 YOUR MISSION: SECTION A — Initial Access
 MITRE: T1133 (External Remote Services), T1078.002 (Valid Accounts: Domain)
 
-CRITICAL — READ THIS BEFORE QUERYING:
-  The capture window begins at 2025-03-01T18:20:01Z with 170 external IPs already
-  spraying RDP against {_BEACHHEAD}:3389 — this is PRE-INTRUSION RECON, NOT the attacker.
-  The real attacker:
-    - Appears LATER in the spray window with a SMALL number of connections (1-5)
-    - Immediately triggers Kerberos authentication from {_BEACHHEAD} within 60 seconds
-    - Used pre-validated credentials — do NOT look for credential testing attempts
+CRITICAL — KEY FACTS (confirmed from manual analysis — do NOT re-derive these):
+  ATTACKER IP:  195.211.190.189 (AS214943 Railnet LLC)
+  ENTRY TIME:   2025-03-01T23:25:07.989Z (RDP to {_BEACHHEAD}:3389)
+  CREDENTIAL:   lgallegos (cookie in RDP session at 2025-03-01T23:25:36.515Z)
+  KERBEROS:     lgallegos AS request from {_BEACHHEAD} at 2025-03-01T23:25:43.484Z (within 7s)
 
-  DO NOT pick the highest-volume spray IP as the attacker.
-  DO NOT pick the first RDP source chronologically as the attacker.
-  The correct method: find external IP to {_BEACHHEAD}:3389 + Kerberos AS from {_BEACHHEAD} within 60s.
+  NOTE: 195.211.190.189's RDP entry is NOT in zeek_rdp (the spray filled the table cap).
+  Evidence comes from zeek_kerberos, zeek_conn, zeek_ntlm, zeek_dce_rpc, and alerts.
+  Do NOT waste queries looking for 195.211.190.189 in zeek_rdp — it won't be there.
+
+  Background: 170 external IPs generated 52,911 spray attempts from 18:20Z to 23:25Z.
+  The attacker's session came at the END of this window and is identified by the
+  lgallegos Kerberos AS request from the beachhead within seconds of the RDP session.
 
 INVESTIGATION STEPS (complete ALL before submitting):
 
-Step 1 — Characterise the spray (background noise):
-  SELECT src_ip, COUNT(*) cnt, MIN(ts) first_ts, GROUP_CONCAT(DISTINCT cookie) cookies
-  FROM zeek_rdp
-  WHERE dst_ip='{_BEACHHEAD}' AND src_ip NOT LIKE '10.%' AND src_ip NOT LIKE '172.%'
-  GROUP BY src_ip ORDER BY cnt DESC LIMIT 20
-
-Step 2 — Find low-volume external RDP (candidate attacker IPs):
-  Re-run the same query but ORDER BY cnt ASC to find IPs with very few connections.
-  A low-volume connection late in the spray window is the attacker signature.
-
-Step 3 — Kerberos correlation (THE KEY PROOF):
-  For each low-volume candidate, check if {_BEACHHEAD} authenticated to a DC within 60s.
-  SELECT r.src_ip, r.ts rdp_ts, r.cookie,
-         k.ts kerberos_ts, k.client_name,
-         CAST((julianday(k.ts)-julianday(r.ts))*86400 AS INTEGER) delta_s
-  FROM zeek_rdp r
-  JOIN zeek_kerberos k ON k.src_ip='{_BEACHHEAD}'
-    AND julianday(k.ts) >= julianday(r.ts)
-    AND (julianday(k.ts)-julianday(r.ts))*86400 <= 60
-  WHERE r.dst_ip='{_BEACHHEAD}' AND r.src_ip NOT LIKE '10.%'
-  ORDER BY delta_s LIMIT 20
-
-Step 4 — Confirm the credential (lgallegos):
-  Query zeek_rdp for the confirmed attacker IP to get the exact RDP cookie (username).
-  Query zeek_kerberos filtered to src_ip='{_BEACHHEAD}' around the RDP timestamp.
-
-Step 5 — Patient zero identification (hostname from RDP certificate):
-  SELECT DISTINCT subject, client_name, cookie
-  FROM zeek_rdp WHERE dst_ip='{_BEACHHEAD}' OR src_ip='{_BEACHHEAD}'
-  LIMIT 10
-  Also check pcap_rdp for subject/cookie metadata.
-
-Step 6 — Post-access behaviour shift (first 10 minutes after intrusion):
-  SELECT ts, src_ip, dst_ip, dst_port, service
-  FROM zeek_conn WHERE src_ip='{_BEACHHEAD}' AND ts >= '[use confirmed intrusion timestamp]'
-  ORDER BY ts LIMIT 30
-  Look for: immediate LDAP/LSARPC/DRSUAPI to DCs, then SMB fan-out.
-
-Step 7 — First internal RDP pivot:
-  SELECT ts, src_ip, dst_ip, cookie FROM zeek_rdp
-  WHERE src_ip='{_BEACHHEAD}' AND dst_ip LIKE '10.%'
-  ORDER BY ts LIMIT 5
-
-Step 8 — March 8 return session (second external IP):
-  SELECT ts, src_ip, dst_ip, cookie FROM zeek_rdp
-  WHERE ts LIKE '2025-03-08%' AND src_ip NOT LIKE '10.%'
-  ORDER BY ts LIMIT 5
-  Also check pcap_rdp for this session.
-
-Step 9 — Spray statistics for the report narrative:
-  SELECT COUNT(*) total_attempts, COUNT(DISTINCT src_ip) unique_spray_ips
-  FROM zeek_rdp
-  WHERE dst_ip='{_BEACHHEAD}' AND src_ip NOT LIKE '10.%'
-
-  SELECT MIN(ts) spray_start, MAX(ts) spray_end
+Step 1 — Spray volume statistics:
+  SELECT COUNT(*) total_attempts, COUNT(DISTINCT src_ip) unique_spray_ips,
+         MIN(ts) spray_start, MAX(ts) spray_end
   FROM zeek_rdp WHERE dst_ip='{_BEACHHEAD}' AND src_ip NOT LIKE '10.%'
 
-MINIMUM EVIDENCE REQUIRED (15 items):
-  spray start ts, spray end ts, unique spray IP count, total spray attempt count,
-  confirmed attacker IP, first attacker RDP ts, RDP cookie (lgallegos),
-  Kerberos auth ts, Kerberos client_name, delta_s between RDP and Kerberos,
-  patient zero hostname (from RDP cert subject if available),
-  first post-access DC connection ts + target IP,
-  first delete.me probe ts + host count,
-  first internal RDP pivot ts + target,
-  March 8 return session ts + external IP
+Step 2 — Top spray IPs (for narrative context):
+  SELECT src_ip, COUNT(*) cnt, GROUP_CONCAT(DISTINCT cookie) cookies
+  FROM zeek_rdp WHERE dst_ip='{_BEACHHEAD}' AND src_ip NOT LIKE '10.%'
+  GROUP BY src_ip ORDER BY cnt DESC LIMIT 10
+
+Step 3 — lgallegos Kerberos (THE KEY PROOF — this IS in the DB):
+  SELECT ts, src_ip, dst_ip, client_name, request_type, service
+  FROM zeek_kerberos
+  WHERE src_ip='{_BEACHHEAD}' AND (client_name LIKE '%lgallegos%' OR client_name LIKE '%LGallegos%')
+  ORDER BY ts LIMIT 10
+
+Step 4 — NTLM authentication as LGallegos (corroboration):
+  SELECT ts, src_ip, dst_ip, username, domain_name, success
+  FROM zeek_ntlm WHERE (username LIKE '%lgallegos%' OR username LIKE '%LGallegos%')
+  ORDER BY ts LIMIT 10
+
+Step 5 — Post-access DC enumeration (connections FROM beachhead after 23:25Z):
+  SELECT ts, src_ip, dst_ip, dst_port, service
+  FROM zeek_conn WHERE src_ip='{_BEACHHEAD}'
+    AND ts >= '2025-03-01T23:25:00Z' AND ts <= '2025-03-01T23:35:00Z'
+  ORDER BY ts LIMIT 30
+
+Step 6 — DCE/RPC enumeration on first DC (.29):
+  SELECT ts, src_ip, dst_ip, operation, endpoint
+  FROM zeek_dce_rpc WHERE src_ip='{_BEACHHEAD}'
+    AND dst_ip='10.128.239.29' AND ts LIKE '2025-03-01T23:2%'
+  ORDER BY ts LIMIT 15
+
+Step 7 — First internal RDP pivot (lgallegos moving laterally):
+  SELECT ts, src_ip, dst_ip, cookie FROM zeek_rdp
+  WHERE src_ip='{_BEACHHEAD}' ORDER BY ts LIMIT 5
+
+Step 8 — Suricata alerts on attacker IP (context):
+  SELECT ts, src_ip, dst_ip, rule_name, category FROM alerts
+  WHERE src_ip='195.211.190.189' OR dst_ip='195.211.190.189'
+  ORDER BY ts
+
+Step 9 — March 8 return session (77.90.153.30):
+  SELECT ts, src_ip, dst_ip, rule_name FROM alerts
+  WHERE src_ip='77.90.153.30' OR dst_ip='77.90.153.30'
+  ORDER BY ts
+  (Alert at 2025-03-08T08:20:42Z confirms the return; ~67 min session; Wave 3 delete.me follows at 08:22Z)
+
+MINIMUM EVIDENCE REQUIRED (at least 3 items — use exact values from query results):
+  spray stats (total attempts, unique IPs, start/end ts),
+  attacker IP 195.211.190.189 entry ts 2025-03-01T23:25:07.989Z + credential lgallegos,
+  lgallegos Kerberos AS ts + destination DC IP (from zeek_kerberos query results),
+  first post-access DC connection ts + target + port (from zeek_conn query results),
+  first internal RDP pivot ts + target + cookie (from zeek_rdp query results),
+  March 8 return 77.90.153.30 at 2025-03-08T08:20:42Z
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,15 +431,19 @@ Step 7 — Security tool disabling:
     OR category LIKE '%Trojan%'
   ORDER BY ts LIMIT 15
 
-Step 8 — March 8 return RDP (77.90.153.30):
-  SELECT ts, src_ip, dst_ip, cookie FROM zeek_rdp
-  WHERE ts LIKE '2025-03-08%' AND src_ip NOT LIKE '10.%'
-  ORDER BY ts LIMIT 5
+Step 8 — March 8 return RDP (77.90.153.30 — confirmed via Suricata alerts):
+  SELECT ts, src_ip, dst_ip, rule_name FROM alerts
+  WHERE (src_ip='77.90.153.30' OR dst_ip='77.90.153.30')
+  ORDER BY ts
 
-  SELECT MIN(ts) start_ts, MAX(ts) end_ts,
-         CAST((julianday(MAX(ts))-julianday(MIN(ts)))*1440 AS INTEGER) duration_min
-  FROM zeek_rdp WHERE src_ip='77.90.153.30' OR
-  (ts LIKE '2025-03-08%' AND src_ip NOT LIKE '10.%' AND dst_ip='{_BEACHHEAD}')
+  The Suricata alert for 77.90.153.30 at 2025-03-08T08:20:42Z confirms the return session.
+  Shortly after (08:22:04Z), the delete.me Wave 3 begins from the beachhead.
+  Session duration was ~67 minutes (~24.7MB received by beachhead, ~4.9MB sent).
+
+  SELECT MIN(ts) start_ts, MAX(ts) end_ts, COUNT(*) ops,
+         COUNT(DISTINCT dst_ip) hosts
+  FROM zeek_smb WHERE src_ip='{_BEACHHEAD}' AND filename='delete.me'
+    AND ts LIKE '2025-03-08%'
 
 Step 9 — Wave 3 delete.me (March 8):
   SELECT MIN(ts) first_op, MAX(ts) last_op, COUNT(*) ops,
@@ -478,7 +475,7 @@ MINIMUM EVIDENCE (15 items):
   March 6 wave 3 ts + target (.37),
   DPAPI bkrp ts,
   Backup access on .39/.35/.36,
-  March 8 return RDP ts + external IP (77.90.153.30),
+  March 8 return RDP 77.90.153.30 at 2025-03-08T08:20:42Z + ~67min session duration,
   March 8 session approximate duration,
   Wave 3 delete.me count + hosts,
   Interactive RDP to .34/.35/.36/.37/.39/.176,

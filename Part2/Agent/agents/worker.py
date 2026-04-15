@@ -114,20 +114,37 @@ _SUBMIT_FINDING_DECL = {
 
 def _deadline_nudge_openai(messages, iteration):
     """Inject deadline warnings into OpenAI-compatible message lists."""
-    if iteration == _MAX_ITERATIONS - 4:
+    if iteration == _MAX_ITERATIONS - 6:
+        # Early warning at iteration 6: start building evidence list now
         messages.append({"role": "user", "content": (
-            "IMPORTANT: You are running low on remaining iterations. "
-            "You MUST call submit_finding within the next 3-4 tool calls. "
-            "Summarize what you have found so far and submit your finding now, "
-            "even if your investigation is not fully complete. "
-            "Include ALL evidence items with exact timestamps, src_ip, and dst_ip from your queries. "
-            "An incomplete finding is better than no finding at all."
+            "CHECKPOINT (iteration 6/12): Stop running new queries for now. "
+            "Look back through ALL the query results you have seen so far in this conversation. "
+            "For each important row or fact you found, mentally note it as an evidence item "
+            "with: timestamp (ts), src_ip, dst_ip, protocol, and a description of what it means. "
+            "You should be accumulating evidence_items as you go. "
+            "You have 6 more iterations — use 2-3 more targeted queries if needed, "
+            "then call submit_finding with the evidence items you have collected."
+        )})
+    elif iteration == _MAX_ITERATIONS - 4:
+        # Strong warning at iteration 8: compile and submit
+        messages.append({"role": "user", "content": (
+            "FINAL PHASE (iteration 8/12): STOP running new queries. "
+            "You now have enough data from previous queries. "
+            "Your ONLY job for the remaining iterations is to call submit_finding. "
+            "Go back through every query result in this conversation and compile them into evidence_items. "
+            "Each evidence item must have: ts (exact timestamp from a query result), "
+            "src_ip, dst_ip, protocol, description (what this event means forensically). "
+            "Include at least 3 evidence items — they can be partial if needed. "
+            "Call submit_finding NOW with everything you have found. "
+            "An incomplete finding with real evidence is far better than no finding."
         )})
     elif iteration == _MAX_ITERATIONS - 1:
         messages.append({"role": "user", "content": (
-            "FINAL WARNING: This is your LAST iteration. You MUST call submit_finding RIGHT NOW "
-            "with whatever evidence you have gathered. Do NOT make any more query_db calls. "
-            "Call submit_finding immediately."
+            "LAST ITERATION (11/12): You MUST call submit_finding RIGHT NOW. "
+            "Do NOT call query_db again. "
+            "Pull timestamps, IPs, and descriptions directly from query results earlier in this conversation. "
+            "Include whatever evidence_items you can construct — even 1 item is acceptable. "
+            "Call submit_finding immediately with status, confidence, summary, and evidence_items."
         )})
 
 
@@ -210,26 +227,13 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
 
     for iteration in range(1, _MAX_ITERATIONS + 1):
         # Inject deadline nudge when approaching iteration limit
-        if iteration == _MAX_ITERATIONS - 4:
-            messages.append({"role": "user", "content": (
-                "IMPORTANT: You are running low on remaining iterations. "
-                "You MUST call submit_finding within the next 3-4 tool calls. "
-                "Summarize what you have found so far and submit your finding now, "
-                "even if your investigation is not fully complete. "
-                "Include ALL evidence items with exact timestamps, src_ip, and dst_ip from your queries. "
-                "An incomplete finding is better than no finding at all."
-            )})
-        elif iteration == _MAX_ITERATIONS - 1:
-            messages.append({"role": "user", "content": (
-                "FINAL WARNING: This is your LAST iteration. You MUST call submit_finding RIGHT NOW "
-                "with whatever evidence you have gathered. Do NOT make any more query_db calls. "
-                "Call submit_finding immediately."
-            )})
+        _deadline_nudge_openai(messages, iteration)
 
-        # Prune old context to stay within TPM limits
-        # keep_recent=14: system (1) + initial user (1) + last 12 exchanges
-        # More aggressive pruning = cheaper calls without losing current focus
-        messages = _prune_openai_messages(messages, keep_recent=14)
+        # Prune old context to stay within TPM limits.
+        # keep_recent=50: covers the full 12-iteration window (~3 msgs/iter × 12 = 36)
+        # so the LLM can see ALL prior query results when compiling evidence_items.
+        # Previous value of 14 caused the LLM to lose early evidence before submission.
+        messages = _prune_openai_messages(messages, keep_recent=50)
 
         # Throttle: small inter-request delay to stay under CommonStack RPM limits.
         # CommonStack enforces per-key request-rate limits; without this, back-to-back
@@ -435,28 +439,26 @@ def _run_gemini_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 "parts": [types.Part.from_text(text="Begin your investigation. Start by calling summarize_db to see what data is available, then use query_db to investigate.")],
             })
 
-        # Inject deadline nudge when approaching iteration limit
-        if iteration == _MAX_ITERATIONS - 4:
-            messages.append({
-                "role": "user",
-                "parts": [types.Part.from_text(text=(
-                    "IMPORTANT: You are running low on remaining iterations. "
-                    "You MUST call submit_finding within the next 3-4 tool calls. "
-                    "Summarize what you have found so far and submit your finding now, "
-                    "even if your investigation is not fully complete. "
-                    "Include ALL evidence items with exact timestamps, src_ip, and dst_ip from your queries. "
-                    "An incomplete finding is better than no finding at all."
-                ))],
-            })
+        # Inject deadline nudge when approaching iteration limit (Gemini version)
+        if iteration == _MAX_ITERATIONS - 6:
+            messages.append({"role": "user", "parts": [types.Part.from_text(text=(
+                "CHECKPOINT (iteration 6/12): Stop running new queries for now. "
+                "Look back through ALL the query results you have seen so far in this conversation. "
+                "Start building your evidence_items list now — each item needs ts, src_ip, dst_ip, protocol, description. "
+                "You have 6 more iterations — use 2-3 more targeted queries if needed, then call submit_finding."
+            ))]})
+        elif iteration == _MAX_ITERATIONS - 4:
+            messages.append({"role": "user", "parts": [types.Part.from_text(text=(
+                "FINAL PHASE (iteration 8/12): STOP running new queries. "
+                "Compile your evidence_items from query results already in this conversation and call submit_finding NOW. "
+                "Include at least 3 evidence items with real timestamps from your queries. "
+                "An incomplete finding with real evidence is far better than no finding."
+            ))]})
         elif iteration == _MAX_ITERATIONS - 1:
-            messages.append({
-                "role": "user",
-                "parts": [types.Part.from_text(text=(
-                    "FINAL WARNING: This is your LAST iteration. You MUST call submit_finding RIGHT NOW "
-                    "with whatever evidence you have gathered. Do NOT make any more query_db calls. "
-                    "Call submit_finding immediately."
-                ))],
-            })
+            messages.append({"role": "user", "parts": [types.Part.from_text(text=(
+                "LAST ITERATION: Call submit_finding RIGHT NOW with whatever evidence you have. "
+                "Do NOT call query_db again. Pull timestamps and IPs from query results in this conversation."
+            ))]})
 
         # Retry loop with inline key rotation on ANY rate limit (429)
         # Strategy: retry once on same key (short wait), then rotate key.
@@ -1154,11 +1156,31 @@ def run_worker(
                 # Sync api_key to wherever the shared index currently points
                 if _all_cs_keys and 0 <= _cs_key_idx[0] < len(_all_cs_keys):
                     api_key = _all_cs_keys[_cs_key_idx[0]]
-                finding_result, iteration = _run_openai_worker(
-                    conn, question_id, title, mitre, system_prompt, backend_model, log_callback,
-                    api_key=api_key, base_url=_override_base_url,
-                    all_cs_keys=_all_cs_keys, cs_key_idx=_cs_key_idx,
-                )
+
+                # Build model rotation list: primary model + any fallback_models
+                _primary_model = backend_model
+                _fallback_models = backend_config.get("fallback_models", []) if backend_config else []
+                _model_rotation = [_primary_model] + [m for m in _fallback_models if m != _primary_model]
+
+                finding_result, iteration = None, 0
+                for _attempt_model in _model_rotation:
+                    if _attempt_model != _primary_model:
+                        print(f"    [Worker {question_id}] Model {_primary_model} failed, trying {_attempt_model}...")
+                        if log_callback:
+                            log_callback("model_fallback", {"question_id": question_id, "from": _primary_model, "to": _attempt_model})
+                    try:
+                        finding_result, iteration = _run_openai_worker(
+                            conn, question_id, title, mitre, system_prompt, _attempt_model, log_callback,
+                            api_key=api_key, base_url=_override_base_url,
+                            all_cs_keys=_all_cs_keys, cs_key_idx=_cs_key_idx,
+                        )
+                        break  # success — stop trying models
+                    except Exception as _model_err:
+                        _merr = str(_model_err)
+                        if "404" in _merr or "model_not_found" in _merr.lower() or "not found" in _merr.lower():
+                            print(f"    [Worker {question_id}] Model {_attempt_model} not available (404), trying next...")
+                            continue
+                        raise  # non-404 error — propagate to outer except
             else:
                 finding_result, iteration = runner(conn, question_id, title, mitre, system_prompt, backend_model, log_callback)
         except Exception as e:

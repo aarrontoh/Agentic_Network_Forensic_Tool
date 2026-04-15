@@ -531,6 +531,7 @@ def _run_multi_agent_analysis(
         "base_url": cs_base,
         "all_keys": cs_keys,
         "shared_key_idx": shared_key_idx,  # mutable — updated by workers mid-run
+        "fallback_models": ["google/gemini-2.5-pro", "anthropic/claude-opus-4-6"],  # tried if primary 404s
     }
     try:
         findings = run_multi_agent(

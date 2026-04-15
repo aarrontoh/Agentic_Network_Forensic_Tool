@@ -263,7 +263,7 @@ def _call_llm(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-            max_tokens=8192,
+            max_tokens=16000,
         )
         result = response.choices[0].message.content
         if result:
