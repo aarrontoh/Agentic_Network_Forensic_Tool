@@ -221,6 +221,108 @@ def load_zeek_rdp(conn: sqlite3.Connection, records: List[dict]) -> int:
     return _bulk_insert(conn, "zeek_rdp", rows, columns)
 
 
+def load_zeek_kerberos(conn: sqlite3.Connection, records: List[dict]) -> int:
+    columns = [
+        "ts", "src_ip", "dst_ip", "request_type", "client", "client_name",
+        "service", "success", "error_code", "cipher", "forwardable", "renewable",
+        "community_id", "session_id",
+    ]
+    rows = []
+    for rec in records:
+        krb = rec.get("zeek_detail", {}).get("kerberos", {})
+        client_full = krb.get("client", "")
+        # Extract username portion (before first '/') for easy querying
+        client_name = client_full.split("/")[0] if client_full else ""
+        rows.append({
+            "ts": rec.get("ts", ""),
+            "src_ip": rec.get("src_ip", ""),
+            "dst_ip": rec.get("dst_ip", ""),
+            "request_type": krb.get("request_type", ""),
+            "client": client_full,
+            "client_name": client_name,
+            "service": krb.get("service", ""),
+            "success": str(krb.get("success", "")),
+            "error_code": krb.get("error_code", ""),
+            "cipher": krb.get("cipher", ""),
+            "forwardable": str(krb.get("forwardable", "")),
+            "renewable": str(krb.get("renewable", "")),
+            "community_id": rec.get("community_id", ""),
+            "session_id": rec.get("session_id", ""),
+        })
+    return _bulk_insert(conn, "zeek_kerberos", rows, columns)
+
+
+def load_zeek_ntlm(conn: sqlite3.Connection, records: List[dict]) -> int:
+    columns = [
+        "ts", "src_ip", "dst_ip", "username", "hostname", "domain_name",
+        "server_nb_computer_name", "success", "status", "community_id", "session_id",
+    ]
+    rows = []
+    for rec in records:
+        ntlm = rec.get("zeek_detail", {}).get("ntlm", {})
+        rows.append({
+            "ts": rec.get("ts", ""),
+            "src_ip": rec.get("src_ip", ""),
+            "dst_ip": rec.get("dst_ip", ""),
+            "username": ntlm.get("username", ""),
+            "hostname": ntlm.get("hostname", ""),
+            "domain_name": ntlm.get("domainname", "") or ntlm.get("domain_name", ""),
+            "server_nb_computer_name": ntlm.get("server_nb_computer_name", ""),
+            "success": str(ntlm.get("success", "")),
+            "status": ntlm.get("status", ""),
+            "community_id": rec.get("community_id", ""),
+            "session_id": rec.get("session_id", ""),
+        })
+    return _bulk_insert(conn, "zeek_ntlm", rows, columns)
+
+
+def _safe_str(v) -> str:
+    """Convert any value to a SQLite-safe string (handles list/dict/None)."""
+    if v is None:
+        return ""
+    if isinstance(v, (list, dict)):
+        import json as _json
+        return _json.dumps(v)
+    return str(v)
+
+
+def load_zeek_dhcp(conn: sqlite3.Connection, records: List[dict]) -> int:
+    columns = ["ts", "src_ip", "dst_ip", "mac", "host_name", "assigned_ip", "lease_time", "community_id", "session_id"]
+    rows = []
+    for rec in records:
+        dhcp = rec.get("zeek_detail", {}).get("dhcp", {})
+        rows.append({
+            "ts":           _safe_str(rec.get("ts", "")),
+            "src_ip":       _safe_str(rec.get("src_ip", "")),
+            "dst_ip":       _safe_str(rec.get("dst_ip", "")),
+            "mac":          _safe_str(dhcp.get("mac", "")),
+            "host_name":    _safe_str(dhcp.get("host_name") or dhcp.get("hostname", "")),
+            "assigned_ip":  _safe_str(dhcp.get("assigned_ip") or dhcp.get("yiaddr", "")),
+            "lease_time":   _safe_str(dhcp.get("lease_time", "")),
+            "community_id": _safe_str(rec.get("community_id", "")),
+            "session_id":   _safe_str(rec.get("session_id", "")),
+        })
+    return _bulk_insert(conn, "zeek_dhcp", rows, columns)
+
+
+def load_zeek_weird(conn: sqlite3.Connection, records: List[dict]) -> int:
+    columns = ["ts", "src_ip", "dst_ip", "name", "addl", "notice", "community_id", "session_id"]
+    rows = []
+    for rec in records:
+        weird = rec.get("zeek_detail", {}).get("weird", {})
+        rows.append({
+            "ts":           _safe_str(rec.get("ts", "")),
+            "src_ip":       _safe_str(rec.get("src_ip", "")),
+            "dst_ip":       _safe_str(rec.get("dst_ip", "")),
+            "name":         _safe_str(weird.get("name", "")),
+            "addl":         _safe_str(weird.get("addl", "")),
+            "notice":       _safe_str(weird.get("notice", "")),
+            "community_id": _safe_str(rec.get("community_id", "")),
+            "session_id":   _safe_str(rec.get("session_id", "")),
+        })
+    return _bulk_insert(conn, "zeek_weird", rows, columns)
+
+
 def load_zeek_smb(conn: sqlite3.Connection, records: List[dict]) -> int:
     columns = ["ts", "src_ip", "dst_ip", "command", "path", "filename", "share_type", "community_id", "session_id"]
     rows = []
@@ -304,9 +406,13 @@ def load_all(
         ("zeek_dns",     lambda: load_zeek_dns(conn, artifacts.get("zeek_dns", []))),
         ("zeek_ssl",     lambda: load_zeek_ssl(conn, artifacts.get("zeek_ssl", []))),
         ("zeek_http",    lambda: load_zeek_http(conn, artifacts.get("zeek_http", []))),
-        ("zeek_dce_rpc", lambda: load_zeek_dce_rpc(conn, artifacts.get("zeek_dce_rpc", []))),
-        ("zeek_rdp",     lambda: load_zeek_rdp(conn, artifacts.get("zeek_rdp", []))),
-        ("zeek_smb",     lambda: load_zeek_smb(conn, artifacts.get("zeek_smb", []))),
+        ("zeek_dce_rpc",    lambda: load_zeek_dce_rpc(conn, artifacts.get("zeek_dce_rpc", []))),
+        ("zeek_rdp",        lambda: load_zeek_rdp(conn, artifacts.get("zeek_rdp", []))),
+        ("zeek_smb",        lambda: load_zeek_smb(conn, artifacts.get("zeek_smb", []))),
+        ("zeek_kerberos",   lambda: load_zeek_kerberos(conn, artifacts.get("zeek_kerberos", []))),
+        ("zeek_ntlm",       lambda: load_zeek_ntlm(conn, artifacts.get("zeek_ntlm", []))),
+        ("zeek_dhcp",       lambda: load_zeek_dhcp(conn, artifacts.get("zeek_dhcp", []))),
+        ("zeek_weird",      lambda: load_zeek_weird(conn, artifacts.get("zeek_weird", []))),
         ("pcap_tables",  lambda: load_pcap_extractions(conn, artifacts)),
     ]
     total_steps = len(steps)

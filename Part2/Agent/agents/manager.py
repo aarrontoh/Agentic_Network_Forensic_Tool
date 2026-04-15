@@ -44,6 +44,7 @@ def run_multi_agent(
     backend_config: Optional[Dict[str, str]] = None,
     sequential: bool = False,
     inter_worker_cooldown: int = 0,
+    investigation_notes: str = "",
 ) -> Dict[str, Finding]:
     """
     Execute the full multi-agent investigation pipeline.
@@ -84,9 +85,19 @@ def run_multi_agent(
                 + "\n".join(prior_summaries)
                 + "\n\nUse these to inform your investigation (e.g., correlate IPs across stages)."
             )
+        notes_block = ""
+        if investigation_notes:
+            notes_block = (
+                "\n\n## PRE-COMPUTED INVESTIGATION NOTES (from phase2_notes.md)\n"
+                + investigation_notes
+                + "\nUse these pre-computed facts as your starting point — skip re-running queries "
+                "that are already answered above. Focus your turns on section-specific evidence "
+                "not covered in these notes."
+            )
         return (
             worker_config["prompt"]
             + f"\n\n{db_context}"
+            + notes_block
             + prior_context
             + "\n\nBegin your investigation now. Start by examining the database to understand the available evidence."
         )

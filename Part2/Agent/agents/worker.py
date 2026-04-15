@@ -27,11 +27,18 @@ from models import EvidenceItem, Finding
 from openai_env import openai_client_kwargs
 from agents.tool_registry import TOOL_DECLARATIONS, dispatch_tool
 
-# Maximum tool-calling iterations before forcing the agent to conclude
-_MAX_ITERATIONS = 30
-
-# Minimum iterations before submit_finding is accepted — forces thorough investigation
-_MIN_ITERATIONS = 20
+# ── Cost caps ────────────────────────────────────────────────────────────────
+# Each iteration = 1 API call. Workers receive pre-computed notes context from
+# phase2_notes.md so they don't need many turns to re-discover basics.
+#
+# Budget math (CommonStack Claude Opus pricing):
+#   12 turns × 4 workers = 48 calls
+#   ~15K input tokens/call (system + history) × $15/1M ≈ $0.72 input
+#   ~1.2K output tokens/call × $75/1M ≈ $0.29 output
+#   Synthesis (1 call, ~30K in + 6K out) ≈ $0.90
+#   Total estimate per full run: ~$2 — adjust _MAX_ITERATIONS to tune cost
+_MAX_ITERATIONS = 12
+_MIN_ITERATIONS = 5
 
 # Retry settings for rate-limit (429) errors
 _MAX_RETRIES = 10
@@ -41,7 +48,7 @@ _MAX_BACKOFF = 300  # seconds — wait up to 5 min per retry for persistent rate
 
 
 # Minimum evidence items required before a finding is accepted
-_MIN_EVIDENCE_ITEMS = 15
+_MIN_EVIDENCE_ITEMS = 10
 
 # The submit_finding tool declaration — agents call this to return results
 _SUBMIT_FINDING_DECL = {
@@ -219,8 +226,17 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 "Call submit_finding immediately."
             )})
 
-        # Prune old context to stay within TPM limits (keep last 20 messages)
-        messages = _prune_openai_messages(messages, keep_recent=20)
+        # Prune old context to stay within TPM limits
+        # keep_recent=14: system (1) + initial user (1) + last 12 exchanges
+        # More aggressive pruning = cheaper calls without losing current focus
+        messages = _prune_openai_messages(messages, keep_recent=14)
+
+        # Throttle: small inter-request delay to stay under CommonStack RPM limits.
+        # CommonStack enforces per-key request-rate limits; without this, back-to-back
+        # iterations within a single worker trigger 429s even with valid credits.
+        _inter_request_delay = float(os.getenv("NF_REQUEST_DELAY", "3"))
+        if iteration > 1:
+            time.sleep(_inter_request_delay)
 
         # Implementation with robust truncation handling + API key rotation
         response = None
@@ -233,6 +249,7 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                     tools=tools,
                     tool_choice=_tool_choice_for_iteration(iteration),
                     temperature=0.1,
+                    max_tokens=1500,  # caps cost; tool calls are short
                 )
                 break
             except Exception as api_err:
@@ -240,26 +257,31 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                 is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
                 is_exhausted = "402" in err_str or "insufficient balance" in err_str or "credit" in err_str or "quota" in err_str
 
-                if is_exhausted:
-                    # Key out of credits — rotate to next key immediately
+                if is_exhausted or is_rate_limit:
+                    # Rotate to next key immediately on either credit exhaustion or rate limit.
+                    # We have 6 keys — cycling is far faster than waiting out a 429 backoff.
                     if all_cs_keys and cs_key_idx[0] + 1 < len(all_cs_keys):
                         cs_key_idx[0] += 1
                         new_key = all_cs_keys[cs_key_idx[0]]
-                        print(f"    [Worker {question_id}] Key exhausted (credits) — rotating to key {cs_key_idx[0] + 1}/{len(all_cs_keys)}")
+                        reason = "credits exhausted" if is_exhausted else "rate limited"
+                        print(f"    [Worker {question_id}] Key {reason} — rotating to key {cs_key_idx[0] + 1}/{len(all_cs_keys)}")
                         from openai import OpenAI as _OAI
                         client = _OAI(api_key=new_key, base_url=base_url or None, timeout=300)
                         backoff = _INITIAL_BACKOFF
                         continue
+                    elif is_rate_limit and attempt < _MAX_RETRIES:
+                        # No more keys to rotate to — fall back to waiting
+                        if log_callback:
+                            log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
+                        print(f"    [Worker {question_id}] All keys rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
+                        time.sleep(backoff)
+                        backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
+                        # Wrap back to first key after waiting
+                        cs_key_idx[0] = 0
+                        client = _OAI(api_key=all_cs_keys[0], base_url=base_url or None, timeout=300)
+                        continue
                     else:
                         raise RuntimeError(f"All CommonStack API keys exhausted: {err_str[:200]}")
-
-                if is_rate_limit and attempt < _MAX_RETRIES:
-                    if log_callback:
-                        log_callback("rate_limit", {"question_id": question_id, "attempt": attempt + 1, "backoff_seconds": backoff})
-                    print(f"    [Worker {question_id}] Rate limited — waiting {backoff}s before retry {attempt + 2}/{_MAX_RETRIES + 1}...")
-                    time.sleep(backoff)
-                    backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF)
-                    continue
                 raise
 
         if response is None:

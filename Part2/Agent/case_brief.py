@@ -4,6 +4,25 @@ CASE_NAME = "SC4063 Network Security"
 # filename extraction (tshark: smb2.filename && ip.src/dst == beachhead). Override with NF_PCAP_BEACHHEAD_IPS.
 CASE_BEACHHEAD_IPS = ("10.128.239.57",)
 
+# Domain substrings for known data-exfiltration / file-upload services.
+# The framework uses these to discover the actual server IPs from Zeek DNS answers
+# (since the IPs vary by region/CDN and won't appear in Suricata alerts).
+# Add or remove entries here to adapt the framework to a different investigation.
+EXFIL_SERVICE_DOMAINS = (
+    "temp.sh",
+    "file.io",
+    "transfer.sh",
+    "gofile.io",
+    "anonfiles.com",
+    "mega.nz",
+    "wetransfer.com",
+    "sendspace.com",
+    "mediafire.com",
+    "ufile.io",
+    "pixeldrain.com",
+    "workupload.com",
+)
+
 INCIDENT_SUMMARY = """
 SC4063 Network Security investigation: a ransomware incident attributed to the Lynx group.
 The available evidence is a 9-day PCAP captured from a core-switch tap. There is no

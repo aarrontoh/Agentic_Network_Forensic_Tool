@@ -140,6 +140,68 @@ CREATE TABLE IF NOT EXISTS zeek_rdp (
     session_id   TEXT
 );
 
+-- Zeek Kerberos authentication records (Phase 2)
+CREATE TABLE IF NOT EXISTS zeek_kerberos (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT,
+    src_ip          TEXT,
+    dst_ip          TEXT,
+    request_type    TEXT,       -- AS or TGS
+    client          TEXT,       -- e.g. lgallegos/WATER.EXAMPLE.COM
+    client_name     TEXT,       -- username portion only (before first '/')
+    service         TEXT,
+    success         TEXT,       -- true/false
+    error_code      TEXT,       -- Kerberos error code on failure
+    cipher          TEXT,       -- encryption type used
+    forwardable     TEXT,
+    renewable       TEXT,
+    community_id    TEXT,
+    session_id      TEXT
+);
+
+-- Zeek NTLM authentication records (Phase 2)
+CREATE TABLE IF NOT EXISTS zeek_ntlm (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT,
+    src_ip       TEXT,
+    dst_ip       TEXT,
+    username     TEXT,
+    hostname     TEXT,
+    domain_name  TEXT,
+    server_nb_computer_name TEXT,
+    success      TEXT,
+    status       TEXT,
+    community_id TEXT,
+    session_id   TEXT
+);
+
+-- Zeek DHCP records (Phase 2) — hostname↔IP mapping
+CREATE TABLE IF NOT EXISTS zeek_dhcp (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT,
+    src_ip       TEXT,
+    dst_ip       TEXT,
+    mac          TEXT,
+    host_name    TEXT,
+    assigned_ip  TEXT,
+    lease_time   TEXT,
+    community_id TEXT,
+    session_id   TEXT
+);
+
+-- Zeek Weird records (Phase 2) — protocol anomalies (ZeroLogon, unusual flags, etc.)
+CREATE TABLE IF NOT EXISTS zeek_weird (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT,
+    src_ip       TEXT,
+    dst_ip       TEXT,
+    name         TEXT,       -- anomaly name e.g. "unknown_protocol"
+    addl         TEXT,       -- additional info
+    notice       TEXT,       -- true if escalated to notice log
+    community_id TEXT,
+    session_id   TEXT
+);
+
 -- Zeek SMB records (Phase 2)
 CREATE TABLE IF NOT EXISTS zeek_smb (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -336,6 +398,15 @@ CREATE INDEX IF NOT EXISTS idx_smb_ts           ON zeek_smb(ts);
 
 CREATE INDEX IF NOT EXISTS idx_rdp_src          ON zeek_rdp(src_ip);
 CREATE INDEX IF NOT EXISTS idx_rdp_dst          ON zeek_rdp(dst_ip);
+CREATE INDEX IF NOT EXISTS idx_krb_src          ON zeek_kerberos(src_ip);
+CREATE INDEX IF NOT EXISTS idx_krb_client       ON zeek_kerberos(client_name);
+CREATE INDEX IF NOT EXISTS idx_krb_ts           ON zeek_kerberos(ts);
+CREATE INDEX IF NOT EXISTS idx_ntlm_src         ON zeek_ntlm(src_ip);
+CREATE INDEX IF NOT EXISTS idx_ntlm_user        ON zeek_ntlm(username);
+CREATE INDEX IF NOT EXISTS idx_dhcp_ip          ON zeek_dhcp(assigned_ip);
+CREATE INDEX IF NOT EXISTS idx_dhcp_host        ON zeek_dhcp(host_name);
+CREATE INDEX IF NOT EXISTS idx_weird_src        ON zeek_weird(src_ip);
+CREATE INDEX IF NOT EXISTS idx_weird_name       ON zeek_weird(name);
 
 CREATE INDEX IF NOT EXISTS idx_conn_ts          ON zeek_conn(ts);
 CREATE INDEX IF NOT EXISTS idx_ssl_ts           ON zeek_ssl(ts);
@@ -379,7 +450,8 @@ def get_table_stats(conn: sqlite3.Connection) -> dict:
     """Return row counts for every evidence table (useful for agent context)."""
     tables = [
         "alerts", "zeek_conn", "zeek_dns", "zeek_ssl", "zeek_http",
-        "zeek_dce_rpc", "zeek_rdp", "zeek_smb",
+        "zeek_dce_rpc", "zeek_rdp", "zeek_smb", "zeek_kerberos",
+        "zeek_dhcp", "zeek_weird", "zeek_ntlm",
         "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp",
         "pcap_tcp_conv",
     ]

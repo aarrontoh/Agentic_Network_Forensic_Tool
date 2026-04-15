@@ -18,8 +18,10 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-# Maximum rows returned per query to stay within LLM context limits
-_MAX_ROWS = 200
+# Maximum rows returned per query.
+# Lower = cheaper (result rows are embedded in every subsequent message in the history).
+# 60 is enough for pattern-finding; workers should write tight WHERE clauses anyway.
+_MAX_ROWS = 60
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,8 +73,10 @@ def count_rows(conn: sqlite3.Connection, table: str, where: str = "") -> Dict[st
     """Count rows in a table with optional WHERE clause."""
     allowed_tables = {
         "alerts", "zeek_conn", "zeek_dns", "zeek_ssl", "zeek_http",
-        "zeek_dce_rpc", "zeek_rdp", "zeek_smb",
-        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp", "pcap_tcp_conv", "pcap_tcp_conv",
+        "zeek_dce_rpc", "zeek_rdp", "zeek_smb", "zeek_kerberos",
+        "zeek_dhcp", "zeek_weird", "zeek_ntlm",
+        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp", "pcap_tcp_conv",
+        "pcap_dcerpc", "pcap_smb_tree", "pcap_netbios", "pcap_dns_srv",
     }
     if table not in allowed_tables:
         return {"error": f"Unknown table '{table}'. Allowed: {sorted(allowed_tables)}"}
@@ -96,8 +100,10 @@ def get_table_info(conn: sqlite3.Connection, table: str, sample_limit: int = 5) 
     """Return column names and a few sample rows for a table."""
     allowed_tables = {
         "alerts", "zeek_conn", "zeek_dns", "zeek_ssl", "zeek_http",
-        "zeek_dce_rpc", "zeek_rdp", "zeek_smb",
-        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp", "pcap_tcp_conv", "pcap_tcp_conv",
+        "zeek_dce_rpc", "zeek_rdp", "zeek_smb", "zeek_kerberos",
+        "zeek_dhcp", "zeek_weird",
+        "pcap_dns", "pcap_http", "pcap_tls", "pcap_smb", "pcap_rdp", "pcap_tcp_conv",
+        "pcap_dcerpc", "pcap_smb_tree", "pcap_netbios", "pcap_dns_srv",
     }
     if table not in allowed_tables:
         return {"error": f"Unknown table '{table}'."}
@@ -127,8 +133,10 @@ TOOL_DECLARATIONS = [
         "description": (
             "Execute a read-only SQL SELECT query against the forensic evidence database. "
             "The database contains tables: alerts, zeek_conn, zeek_dns, zeek_ssl, zeek_http, "
-            "zeek_dce_rpc, zeek_rdp, zeek_smb, pcap_dns, pcap_http, pcap_tls, pcap_smb, pcap_rdp, pcap_tcp_conv. "
-            "Returns columns, rows (max 200), and whether results were truncated. "
+            "zeek_dce_rpc, zeek_rdp, zeek_smb, zeek_kerberos, zeek_dhcp, zeek_weird, zeek_ntlm, "
+            "pcap_dns, pcap_http, pcap_tls, pcap_smb, pcap_rdp, pcap_tcp_conv, "
+            "pcap_dcerpc, pcap_smb_tree, pcap_netbios, pcap_dns_srv. "
+            "Returns columns, rows (max 60), and whether results were truncated. "
             "Use this to find specific evidence, correlate IPs, and validate hypotheses. "
             "IMPORTANT: You MUST use this tool to support any claim with real data."
         ),

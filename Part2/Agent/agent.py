@@ -173,6 +173,53 @@ def run_case(args: argparse.Namespace) -> None:
 # DB verification (--stop-phase 5)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _extract_notes_summary(notes_path: str, max_chars: int = 4000) -> str:
+    """
+    Extract a concise summary from phase2_notes.md for injection into worker prompts.
+
+    Pulls only the most actionable sections:
+      - Section 3 (RDP spray + attacker Kerberos correlation)
+      - Section 12 (exfil volume)
+      - Section 14 (key event timeline)
+
+    Capped at max_chars to avoid bloating worker prompts.
+    """
+    try:
+        content = Path(notes_path).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+    # Extract specific sections by header
+    target_headers = [
+        "## 3. RDP Spray Analysis",
+        "## 12. Exfiltration Volume",
+        "## 14. Key Event Timeline",
+    ]
+    extracted = []
+    lines = content.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        is_target = any(line.startswith(h) for h in target_headers)
+        if is_target:
+            section_lines = [line]
+            i += 1
+            # Collect until next ## section
+            while i < len(lines) and not (lines[i].startswith("## ") and not any(lines[i].startswith(h) for h in target_headers)):
+                if lines[i].startswith("---"):
+                    break
+                section_lines.append(lines[i])
+                i += 1
+            extracted.append("\n".join(section_lines))
+        else:
+            i += 1
+
+    summary = "\n\n".join(extracted)
+    if len(summary) > max_chars:
+        summary = summary[:max_chars] + "\n...[truncated — see phase2_notes.md for full details]"
+    return summary
+
+
 def _verify_db_and_exit(conn, db_path: str) -> None:
     """Print a DB health report and exit. Called when --stop-phase 5 is set."""
     from db.schema import get_table_stats
@@ -294,6 +341,17 @@ def _run_multi_agent_analysis(
         state.log("db_loaded", counts)
         print(f"  [Phase 5] Database ready: {sum(v for v in counts.values() if isinstance(v, int)):,} total rows")
 
+        # Generate Phase 2 investigation notes
+        try:
+            from tools.phase2_notes import generate_phase2_notes
+            notes_path = str(Path(work_dir) / "phase2_notes.md")
+            print(f"  [Phase 5] Generating investigation notes → phase2_notes.md")
+            notes_content = generate_phase2_notes(conn, notes_path)
+            state.log("phase2_notes_generated", {"path": notes_path, "size": len(notes_content)})
+        except Exception as _e:
+            print(f"  [Phase 5] Notes generation failed (non-fatal): {_e}")
+            notes_content = ""
+
         if stop_phase <= 5:
             _verify_db_and_exit(conn, db_path)
     else:
@@ -367,6 +425,9 @@ def _run_multi_agent_analysis(
 
     _write_progress(work_dir, "multi_agent")
 
+    # ── Load notes summary for worker context injection ──────────────────────
+    notes_summary = _extract_notes_summary(str(Path(work_dir) / "phase2_notes.md"))
+
     # ── Phase 6: Worker agents ───────────────────────────────────────────────
     print(f"\n  [Phase 6] Running workers A → B → C → D  ({cs_model})")
     print(f"  [Phase 6] {len(cs_keys)} key(s) available, rotating on credit exhaustion")
@@ -394,6 +455,7 @@ def _run_multi_agent_analysis(
                 backend_config=cs_backend,
                 sequential=True,
                 inter_worker_cooldown=60,
+                investigation_notes=notes_summary,
             )
             if findings:
                 print(f"  [Phase 6] All workers done (key {key_idx + 1}/{len(cs_keys)})")
@@ -478,10 +540,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Analysis mode (only multi-agent is supported)")
     run.add_argument("--from-phase", dest="from_phase", type=int,
                      choices=[1, 5, 6, 8], default=1,
-                     help="Start from phase: 1=full, 5=reload DB, 6=reuse DB, 8=re-synthesize")
+                     help="Start from phase: 1=full ingest+DB+analysis, 5=reload DB only, 6=reuse existing DB, 8=re-synthesize only")
     run.add_argument("--stop-phase", dest="stop_phase", type=int,
-                     choices=[5], default=99,
-                     help="Stop after this phase (5=load DB then print verification report)")
+                     choices=[5, 6], default=99,
+                     help="Stop after this phase (5=load DB then print verification; 6=run workers but skip synthesis)")
     run.add_argument("--force-refresh", dest="force_refresh", action="store_true",
                      help="Ignore ingest cache and re-run phases 1-4")
     run.add_argument("--alert-json", dest="alert_json", default="")

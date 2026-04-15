@@ -37,27 +37,30 @@ AVAILABLE TOOLS:
   submit_finding(...)  — Submit your completed finding
 
 DATABASE TABLES (key ones):
-  alerts              — Suricata EVE alerts (ts, src_ip, dst_ip, rule_name, category)
-  zeek_conn           — All TCP/UDP connections (ts, src_ip, dst_ip, src_port, dst_port, proto, service, orig_bytes, resp_bytes)
-  zeek_rdp            — RDP sessions (ts, src_ip, dst_ip, cookie, subject, client_name)
-  zeek_kerberos       — Kerberos auth events (ts, src_ip, dst_ip, client_name, service, success)
-  zeek_smb            — SMB file operations (ts, src_ip, dst_ip, filename, action, share_name)
-  zeek_dce_rpc        — DCE/RPC calls (ts, src_ip, dst_ip, operation, endpoint)
-  zeek_dns            — DNS queries (ts, src_ip, query, answers)
+  alerts              — Suricata EVE alerts (ts, src_ip, dst_ip, rule_name, category, severity)
+  zeek_conn           — All TCP/UDP connections (ts, src_ip, dst_ip, src_port, dst_port, protocol, orig_bytes, resp_bytes, conn_state)
+  zeek_rdp            — RDP sessions (ts, src_ip, dst_ip, cookie, result)
+  zeek_kerberos       — Kerberos auth (ts, src_ip, dst_ip, client_name, client, service, success, request_type, error_code, cipher)
+  zeek_smb            — SMB file ops (ts, src_ip, dst_ip, filename, command [=action, e.g. SMB::FILE_OPEN], path [=share path], share_type)
+  zeek_dce_rpc        — DCE/RPC calls (ts, src_ip, dst_ip, operation, endpoint, named_pipe)
+  zeek_dns            — DNS queries (ts, src_ip, query, answers, qtype_name, rcode_name)
   zeek_ssl            — TLS sessions (ts, src_ip, dst_ip, server_name, version)
   zeek_http           — HTTP (ts, src_ip, dst_ip, host, uri, method, status_code)
-  zeek_ntlm           — NTLM auth (ts, src_ip, dst_ip, domain, username, success)
-  pcap_rdp            — RDP from PCAP (ts, src_ip, dst_ip, cookie, real_ts, source_pcap)
-  pcap_tcp_conv       — TCP conversation stats (src_ip, dst_ip, bytes_a_to_b, bytes_b_to_a, total_frames)
-  pcap_smb            — SMB from PCAP deep extraction (ts, src_ip, dst_ip, filename, action)
-  pcap_dcerpc         — DCE/RPC from PCAP (ts, src_ip, dst_ip, operation)
+  zeek_dhcp           — DHCP leases (ts, src_ip, mac, host_name, assigned_ip) — use for IP→hostname mapping
+  zeek_weird          — Protocol anomalies (ts, src_ip, dst_ip, name, addl) — ZeroLogon candidates
+  zeek_ntlm           — NTLM auth (ts, src_ip, dst_ip, username, hostname, domain_name, success, status)
+  pcap_rdp            — RDP from PCAP (ts, src_ip, dst_ip, cookie, src_port, dst_port, source_pcap)
+  pcap_tcp_conv       — TCP conversation stats (src_ip, dst_ip, bytes_a_to_b, bytes_b_to_a, total_frames, source_pcap)
+  pcap_smb            — SMB from PCAP (ts, src_ip, dst_ip, filename, smb2_cmd, tree, source_pcap)
+  pcap_dcerpc         — DCE/RPC from PCAP (ts, src_ip, dst_ip, interface_name, opnum, is_dcsync_indicator, source_pcap)
 
 RULES:
   - Only use SELECT queries — no INSERT/UPDATE/DELETE
   - Every claim in your finding MUST reference an exact query result
   - Never round numbers — use exact values from query results
-  - You have up to 30 iterations; use them fully before submitting
-  - Do NOT submit until you have investigated ALL steps in your section
+  - Queries return max 60 rows — write tight WHERE/LIMIT clauses; use COUNT(*) + GROUP BY for aggregates
+  - You have up to 12 iterations — check the pre-computed notes first to skip redundant queries
+  - Submit once you have 10+ evidence items with exact timestamps; do not wait for iteration 12
 """.strip()
 
 
@@ -171,17 +174,20 @@ INVESTIGATION STEPS (complete ALL):
 Step 1 — Three waves of delete.me write-testing:
   SELECT DATE(ts) wave_date, COUNT(*) total_ops,
          COUNT(DISTINCT dst_ip) unique_hosts,
-         SUM(CASE WHEN action='FILE_OPEN' THEN 1 ELSE 0 END) opens,
-         SUM(CASE WHEN action='FILE_DELETE' THEN 1 ELSE 0 END) deletes
+         SUM(CASE WHEN command LIKE '%FILE_OPEN%' THEN 1 ELSE 0 END) opens,
+         SUM(CASE WHEN command LIKE '%FILE_DELETE%' THEN 1 ELSE 0 END) deletes
   FROM zeek_smb
   WHERE src_ip='{_BEACHHEAD}' AND filename='delete.me'
   GROUP BY DATE(ts) ORDER BY wave_date
 
+  NOTE: if delete.me doesn't appear, try: WHERE src_ip='{_BEACHHEAD}' AND filename LIKE '%delete%'
+  Also try pcap_smb: SELECT ts, src_ip, dst_ip, filename, smb2_cmd FROM pcap_smb WHERE filename LIKE '%delete%'
+
 Step 2 — ADMIN$ vs C$ host counts:
-  SELECT share_name, COUNT(DISTINCT dst_ip) unique_hosts, COUNT(*) total_ops
+  SELECT path, COUNT(DISTINCT dst_ip) unique_hosts, COUNT(*) total_ops
   FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND share_name IN ('ADMIN$','C$','IPC$')
-  GROUP BY share_name
+  WHERE src_ip='{_BEACHHEAD}' AND (path LIKE '%ADMIN$%' OR path LIKE '%C$%' OR path LIKE '%IPC$%')
+  GROUP BY path ORDER BY total_ops DESC
 
 Step 3 — SAMR enumeration breakdown:
   SELECT operation, COUNT(*) cnt, COUNT(DISTINCT dst_ip) unique_dcs
@@ -230,8 +236,8 @@ Step 11 — SRVSVC share enumeration:
   FROM zeek_dce_rpc WHERE operation='NetrShareEnum' OR endpoint='srvsvc'
 
 Step 12 — ADMIN$ access to DCs:
-  SELECT ts, src_ip, dst_ip, share_name FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND share_name='ADMIN$'
+  SELECT ts, src_ip, dst_ip, path FROM zeek_smb
+  WHERE src_ip='{_BEACHHEAD}' AND path LIKE '%ADMIN$%'
     AND dst_ip IN ('10.128.239.28','10.128.239.29','10.128.239.30')
   ORDER BY ts LIMIT 10
 
@@ -303,8 +309,11 @@ Step 5 — SMB file staging on .37:
          MIN(ts) first_access, MAX(ts) last_access
   FROM zeek_smb WHERE src_ip='{_BEACHHEAD}' AND dst_ip='10.128.239.37'
 
+  NOTE: also query pcap_smb for additional SMB file evidence:
+  SELECT COUNT(*), COUNT(DISTINCT filename) FROM pcap_smb WHERE src_ip='{_BEACHHEAD}'
+
 Step 6 — Critical sensitive files:
-  SELECT ts, src_ip, dst_ip, filename, action
+  SELECT ts, src_ip, dst_ip, filename, command
   FROM zeek_smb
   WHERE filename LIKE '%user_db%' OR filename LIKE '%credit_card%'
     OR filename LIKE '%.vib%' OR filename LIKE '%arrestees%'
@@ -315,7 +324,7 @@ Step 6 — Critical sensitive files:
   ORDER BY ts LIMIT 30
 
 Step 7 — GPO files (critical — disables Defender, grants RDP):
-  SELECT ts, src_ip, dst_ip, filename, action
+  SELECT ts, src_ip, dst_ip, filename, command
   FROM zeek_smb WHERE filename IN ('Groups.xml','Registry.xml')
   ORDER BY ts LIMIT 10
 
@@ -328,7 +337,7 @@ Step 8 — Law enforcement archives:
 Step 9 — DC backup .vib files:
   SELECT ts, src_ip, dst_ip, filename FROM zeek_smb
   WHERE filename LIKE '%DC1%' OR filename LIKE '%DC3%' OR filename LIKE '%DC7%'
-    OR filename LIKE '%.vib%'
+    OR filename LIKE '%.vib%' OR filename LIKE '%.vbk%' OR filename LIKE '%.vbm%'
   ORDER BY ts LIMIT 10
 
 Step 10 — Archive staging count:
@@ -374,13 +383,13 @@ CONTEXT:
 INVESTIGATION STEPS (complete ALL):
 
 Step 1 — Key executable identification (zeek_smb + pcap_smb):
-  SELECT ts, src_ip, dst_ip, filename, action, share_name
+  SELECT ts, src_ip, dst_ip, filename, command, path
   FROM zeek_smb
   WHERE filename IN ('kkwlo.exe','hfs.exe','hfs.ips.txt',
                      'Microsofts.exe','UninstallWinClient.exe','HOW TO BACK FILES.txt')
   ORDER BY ts
 
-  SELECT ts, src_ip, dst_ip, filename, action FROM pcap_smb
+  SELECT ts, src_ip, dst_ip, filename, smb2_cmd FROM pcap_smb
   WHERE filename LIKE '%kkwlo%' OR filename LIKE '%hfs%'
     OR filename LIKE '%Microsofts%' OR filename LIKE '%UninstallWin%'
     OR filename LIKE '%HOW TO BACK%'
@@ -399,7 +408,7 @@ Step 3 — Executable transfer waves on March 6:
   GROUP BY SUBSTR(ts,1,16), dst_ip ORDER BY minute
 
 Step 4 — SMB access to payload hosts:
-  SELECT ts, src_ip, dst_ip, share_name, filename
+  SELECT ts, src_ip, dst_ip, path, filename
   FROM zeek_smb WHERE src_ip='{_BEACHHEAD}'
     AND dst_ip IN ('10.128.239.34','10.128.239.35','10.128.239.36',
                    '10.128.239.37','10.128.239.39','10.128.239.176')

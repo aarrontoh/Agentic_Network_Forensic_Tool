@@ -26,7 +26,23 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from case_brief import CASE_BEACHHEAD_IPS
 
 # Number of parallel tshark workers — tune based on CPU cores and I/O
-_NUM_WORKERS = int(os.getenv("PCAP_THREADS", "8"))
+_NUM_WORKERS = int(os.getenv("PCAP_THREADS", "16"))
+
+# Per-command tshark timeout in seconds.
+# 90 s is enough for a 1 GB PCAP with a focused display filter.
+# The old 600 s meant a hung command blocked one thread for 10 minutes.
+_TSHARK_TIMEOUT = int(os.getenv("PCAP_TSHARK_TIMEOUT", "90"))
+
+# Known exfil IPs — only run the expensive tcp_conversations pass on PCAPs
+# that are likely to contain these flows (March 6–9 window).
+_EXFIL_IPS_SET = frozenset({
+    "51.91.79.17",      # temp.sh
+    "65.22.162.9",      # temp.sh
+    "65.22.160.9",      # temp.sh
+    "144.76.136.153",   # file.io
+    "144.76.136.154",   # file.io
+    "95.216.22.32",     # transfer.sh
+})
 
 
 def _max_records(kind: str, default: int) -> int:
@@ -136,9 +152,35 @@ def analyze_targeted_pcaps(
     results_lock = Lock()
     completed_count = [0]  # mutable counter for progress
 
+    def _pcap_has_ioc_traffic(pcap: str) -> bool:
+        """Quick probe: does this PCAP contain ANY packet from an IOC IP?
+        Uses -c 1 so tshark stops at the first hit — fast on relevant PCAPs,
+        near-instant fail on irrelevant ones.  Skip the whole PCAP if False."""
+        if not priority_ips:
+            return True  # no filter → process everything
+        try:
+            probe = subprocess.run(
+                [tshark_bin, "-r", pcap, "-Y", ip_clause, "-c", "1",
+                 "-T", "fields", "-e", "frame.number"],
+                capture_output=True, text=True, timeout=_TSHARK_TIMEOUT,
+            )
+            return bool(probe.stdout.strip())
+        except (subprocess.TimeoutExpired, OSError):
+            return True  # probe failed → process anyway to be safe
+
     def _process_one_pcap(pcap: str) -> None:
-        """Process a single PCAP through all 5 extractors (runs in thread)."""
+        """Process a single PCAP through all extractors (runs in thread)."""
         pcap_name = Path(pcap).name
+
+        # Gate: skip entire PCAP if it contains no IOC traffic at all.
+        # One -c 1 probe replaces up to 9 full-scan tshark calls on irrelevant PCAPs.
+        if not _pcap_has_ioc_traffic(pcap):
+            with results_lock:
+                completed_count[0] += 1
+                if progress_cb:
+                    progress_cb(completed_count[0], len(to_analyze), pcap_name)
+            return
+
         # Each thread collects its own local results, then merges under lock
         local: Dict[str, list] = {
             "dns_queries": [], "http_requests": [], "tls_sessions": [],
@@ -148,16 +190,39 @@ def analyze_targeted_pcaps(
             "errors": [],
         }
 
-        _extract_dns(tshark_bin, pcap, pcap_name, ip_clause, local)
-        _extract_http(tshark_bin, pcap, pcap_name, "ip", local)
-        _extract_tls(tshark_bin, pcap, pcap_name, "ip", local)
-        _extract_smb(tshark_bin, pcap, pcap_name, internal_clause, beachheads, local)
-        _extract_rdp(tshark_bin, pcap, pcap_name, "ip", local)
+        def _cap_reached(key: str) -> bool:
+            """True if this artifact type has already hit its global cap."""
+            max_key = {
+                "dns_queries": "dns", "http_requests": "http", "tls_sessions": "tls",
+                "smb_sessions": "smb", "rdp_sessions": "rdp",
+                "tcp_conversations": "tcp_conv", "dns_srv_records": "dns_srv",
+                "dcerpc_calls": "dcerpc", "smb_tree_connects": "smb_tree",
+                "netbios_records": "netbios",
+            }.get(key, "")
+            cap = _MAX.get(max_key, 999_999)
+            with results_lock:
+                return len(results.get(key, [])) >= cap
+
+        if not _cap_reached("dns_queries"):
+            _extract_dns(tshark_bin, pcap, pcap_name, ip_clause, local)
+        if not _cap_reached("http_requests"):
+            _extract_http(tshark_bin, pcap, pcap_name, "ip", local)
+        if not _cap_reached("tls_sessions"):
+            _extract_tls(tshark_bin, pcap, pcap_name, "ip", local)
+        if not _cap_reached("smb_sessions"):
+            _extract_smb(tshark_bin, pcap, pcap_name, internal_clause, beachheads, local)
+        if not _cap_reached("rdp_sessions"):
+            _extract_rdp(tshark_bin, pcap, pcap_name, "ip", local)
+        # tcp_conversations is the most expensive — gated inside the function itself
         _extract_tcp_conversations(tshark_bin, pcap, pcap_name, external, internal, local)
-        _extract_dns_srv(tshark_bin, pcap, pcap_name, ip_clause, local)
-        _extract_dcerpc(tshark_bin, pcap, pcap_name, internal_clause, local)
-        _extract_smb_tree(tshark_bin, pcap, pcap_name, internal_clause, beachheads, local)
-        _extract_netbios(tshark_bin, pcap, pcap_name, internal_clause, local)
+        if not _cap_reached("dns_srv_records"):
+            _extract_dns_srv(tshark_bin, pcap, pcap_name, ip_clause, local)
+        if not _cap_reached("dcerpc_calls"):
+            _extract_dcerpc(tshark_bin, pcap, pcap_name, internal_clause, local)
+        if not _cap_reached("smb_tree_connects"):
+            _extract_smb_tree(tshark_bin, pcap, pcap_name, internal_clause, beachheads, local)
+        if not _cap_reached("netbios_records"):
+            _extract_netbios(tshark_bin, pcap, pcap_name, internal_clause, local)
 
         _KEY_TO_MAX = {
             "dns_queries": "dns", "http_requests": "http", "tls_sessions": "tls",
@@ -223,7 +288,7 @@ def _tshark(tshark_bin: str, pcap: str, display_filter: str, fields: List[str]) 
     for f in fields:
         cmd += ["-e", f]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_TSHARK_TIMEOUT)
         if proc.returncode != 0 and proc.stderr:
             stderr_preview = proc.stderr.strip()[:200]
             if "aren't valid" in stderr_preview or "not found" in stderr_preview:
@@ -234,7 +299,7 @@ def _tshark(tshark_bin: str, pcap: str, display_filter: str, fields: List[str]) 
             rows.append(line.split("\t"))
         return rows
     except subprocess.TimeoutExpired:
-        print(f"    [tshark] TIMEOUT on {Path(pcap).name} filter={display_filter[:60]}")
+        print(f"    [tshark] TIMEOUT({_TSHARK_TIMEOUT}s) on {Path(pcap).name} filter={display_filter[:60]}")
         return []
     except OSError as exc:
         print(f"    [tshark] ERROR on {Path(pcap).name}: {exc}")
@@ -400,15 +465,35 @@ def _extract_tcp_conversations(tshark: str, pcap: str, pcap_name: str, external_
 
     This captures actual byte volumes for connections where Zeek conn records
     may show zero bytes (e.g., long-lived TLS sessions to exfil services).
-    Keeps conversations that involve known external IOC IPs OR any conversation
-    where one side is a known internal IOC IP and the other is external (to catch
-    exfiltration to IPs not in the alert set, like temp.sh).
+
+    PERFORMANCE NOTE: -z conv,tcp scans every packet in the PCAP — no filter
+    is possible. We skip this entirely for PCAPs that have no chance of
+    containing exfil traffic (early PCAPs before March 6).
     """
     if not external_ips and not internal_ips:
         return
+    # Gate: only run the expensive conv,tcp pass if this PCAP actually contains
+    # a known exfil IP.  We do a quick tshark probe (-c 1) which stops as soon
+    # as the first matching packet is found — fast on relevant PCAPs, near-instant
+    # on irrelevant ones.  This is event-based, NOT date/timestamp based.
+    exfil_ips = [ip for ip in external_ips if ip in _EXFIL_IPS_SET]
+    if not exfil_ips:
+        return  # no exfil IPs in this PCAP's target set — skip conv,tcp
+    exfil_clause = " || ".join(f"ip.addr == {ip}" for ip in exfil_ips)
+    try:
+        probe = subprocess.run(
+            [tshark, "-r", pcap, "-Y", exfil_clause, "-c", "1",
+             "-T", "fields", "-e", "frame.number"],
+            capture_output=True, text=True, timeout=_TSHARK_TIMEOUT,
+        )
+        if not probe.stdout.strip():
+            return  # no matching packets — skip conv,tcp for this PCAP
+    except (subprocess.TimeoutExpired, OSError):
+        return  # probe timed out or failed — skip to be safe
+
     try:
         cmd = [tshark, "-r", pcap, "-q", "-z", "conv,tcp"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_TSHARK_TIMEOUT * 2)  # 180s — conv,tcp is slow
         if proc.returncode != 0:
             return
         ext_set = set(external_ips)

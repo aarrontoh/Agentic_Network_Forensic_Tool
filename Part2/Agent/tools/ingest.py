@@ -219,17 +219,6 @@ def run_ingest(
         zeek_result = cached_zeek
     else:
         ioc_ips  = set(alert_result.get("all_ips", []))
-        # Add well-known exfiltration service IPs so their Zeek traffic is captured.
-        # These are commonly used by ransomware groups and may not appear in alerts.
-        _EXFIL_SERVICE_IPS = {
-            "51.91.79.17",    # temp.sh (OVH)
-            "65.22.162.9",    # temp.sh (alternative)
-            "65.22.160.9",    # temp.sh (alternative)
-            "144.76.136.153", # file.io
-            "144.76.136.154", # file.io
-            "95.216.22.32",   # transfer.sh
-        }
-        ioc_ips |= _EXFIL_SERVICE_IPS
         # Community IDs disabled for grep — even high-priority CIDs produce
         # thousands of patterns that match nearly every Zeek line.
         # IP-based filtering alone is precise enough.
@@ -348,6 +337,32 @@ def run_ingest(
     else:
         target_ips = set(alert_result.get("all_ips_unfiltered",
                                          alert_result.get("all_ips", [])))
+        # Dynamically discover exfil destination IPs from Zeek DNS answers.
+        # Exfil services (temp.sh, file.io, etc.) are rarely in Suricata alerts,
+        # but the beachhead host made DNS lookups before connecting — those answers
+        # contain the actual server IPs.  Extract them here so conv,tcp and other
+        # tshark extractors can target them without hardcoding any specific IP.
+        from case_brief import EXFIL_SERVICE_DOMAINS
+        exfil_ips_from_dns: set = set()
+        for dns_rec in zeek_result.get("records", {}).get("dns", []):
+            qname = ""
+            answers = []
+            zd = dns_rec.get("zeek_detail", {}).get("dns", {})
+            qname = str(zd.get("query", "") or dns_rec.get("query", "")).lower()
+            raw_answers = zd.get("answers", []) or []
+            if isinstance(raw_answers, str):
+                raw_answers = [raw_answers]
+            answers = raw_answers
+            if any(domain in qname for domain in EXFIL_SERVICE_DOMAINS):
+                for ans in answers:
+                    ans_str = str(ans).strip()
+                    # Keep only IPv4 addresses (skip CNAME/MX strings)
+                    import re as _re
+                    if _re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", ans_str):
+                        exfil_ips_from_dns.add(ans_str)
+        if exfil_ips_from_dns:
+            print(f"  [Phase 3] Discovered {len(exfil_ips_from_dns)} exfil IPs from Zeek DNS: {sorted(exfil_ips_from_dns)}")
+        target_ips |= exfil_ips_from_dns
         tshark_chip_log: List[Dict[str, str]] = []
 
         if targeted_pcaps and target_ips:

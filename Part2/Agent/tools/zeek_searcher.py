@@ -35,13 +35,46 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 MAX_PER_PROTOCOL = 500_000
-_KNOWN_PROTOCOLS = ("conn", "connection", "dns", "ssl", "http", "dce_rpc", "rdp", "smb", "smb_mapping", "smb_files", "weird", "files", "x509", "kerberos", "dhcp", "notice")
+_KNOWN_PROTOCOLS = ("conn", "connection", "dns", "ssl", "http", "dce_rpc", "rdp", "smb", "smb_mapping", "smb_files", "weird", "files", "x509", "kerberos", "dhcp", "notice", "ntlm")
 
 # Substrings that pull Zeek lines via grep even when neither IP is in the Suricata IOC set
 # (e.g. workstation→resolver DNS for temp.sh). Python verification still applies below.
 _EXFIL_GREP_MARKERS = (
     "temp.sh", "file.io", "transfer.sh", "anonfiles", "gofile",
     "filetransfer.io", "we.tl", "mega.nz",
+)
+
+# High-signal, low-noise protocol types that must be captured in FULL regardless
+# of whether their IPs appear in Suricata alerts.
+#
+# Rationale per type:
+#   kerberos    — domain-wide auth picture; attacker lateral movement may use
+#                 accounts/hosts that never triggered an alert
+#   dce_rpc     — ALL AD enumeration calls matter; SAMR from non-alerted hosts
+#                 can reveal discovery scope beyond the beachhead
+#   rdp         — internal RDP pivots won't appear in Suricata if the lateral
+#                 movement is allowed by policy
+#   smb_files   — file operations from ALL hosts; staged payloads may be pulled
+#                 from shares by machines not in the IOC set
+#   smb_mapping — share access by any host; shows full lateral movement scope
+#   dhcp        — complete IP→hostname mapping requires ALL leases
+#   weird       — protocol anomalies network-wide (ZeroLogon attempts etc.)
+#   ntlm        — credential usage across the whole domain
+#
+# High-volume types (conn, dns, ssl, http) are intentionally excluded and keep
+# IOC-IP filtering to avoid loading gigabytes of background traffic noise.
+_ALWAYS_CAPTURE_PROTOCOLS: frozenset = frozenset({
+    "kerberos", "dce_rpc", "rdp",
+    "smb_files", "smb_mapping",
+    "dhcp", "weird", "ntlm",
+})
+
+# Grep patterns for always-capture protocols.
+# In Elastic/Filebeat-wrapped Zeek JSON each line has:
+#   "fileset":{"name":"kerberos"}  (or dce_rpc, rdp, etc.)
+# These exact substrings are grep-able to pull the whole protocol log type.
+_ALWAYS_CAPTURE_GREP_PATTERNS = tuple(
+    f'"name":"{proto}"' for proto in _ALWAYS_CAPTURE_PROTOCOLS
 )
 
 _EMPTY_RECORDS = lambda: {p: [] for p in list(_KNOWN_PROTOCOLS) + ["other"]}  # noqa: E731
@@ -92,22 +125,34 @@ def normalize_zeek_record(raw: dict) -> dict:
 
 def _write_pattern_file(ioc_ips: Set[str], ioc_community_ids: Set[str]) -> str:
     """
-    Write all IOC patterns to a temp file and return its path.
+    Write all grep patterns to a temp file and return its path.
 
-    Community IDs are used verbatim.
+    Three classes of patterns:
+      1. IOC IPs (quoted) — only match lines containing these IPs
+      2. Community IDs — match flows regardless of IP
+      3. Exfil domain markers — temp.sh, file.io, etc.
+      4. Always-capture protocol fileset names — pull ALL kerberos/dce_rpc/rdp/
+         smb_files/smb_mapping/dhcp/weird/ntlm records from the full Zeek file,
+         regardless of whether their IPs were in Suricata alerts.
+
     IPs are wrapped in double-quotes (e.g. "10.1.2.3") so grep's fixed-string
     match cannot match "10.1.2.30" as a false positive.
     """
     fd, path = tempfile.mkstemp(suffix=".txt", prefix="zeek_ioc_")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # IOC-based patterns
         for cid in sorted(ioc_community_ids):
             if cid:
                 fh.write(cid + "\n")
         for ip in sorted(ioc_ips):
             if ip:
                 fh.write(f'"{ip}"\n')
+        # Exfil domain markers
         for marker in _EXFIL_GREP_MARKERS:
             fh.write(marker + "\n")
+        # Always-capture protocol patterns — pull entire log types
+        for pattern in _ALWAYS_CAPTURE_GREP_PATTERNS:
+            fh.write(pattern + "\n")
     return path
 
 
@@ -207,9 +252,23 @@ def _process_lines(
 
         is_exfil_marker = _record_has_exfil_network_marker(rec)
 
-        # Exact Python-side verification eliminates any grep false positives.
-        # Also keep DNS/TLS/HTTP rows that only match on exfil hostnames (no IOC IP on the line).
-        if not (
+        # Derive bucket early — needed for both the always-capture check
+        # and for downstream reservoir sampling / protected-record logic.
+        log_type = rec.get("fileset", {}).get("name", "other")
+        bucket = log_type if log_type in records else "other"
+
+        # Python-side filter:
+        #
+        # Always-capture protocols bypass IOC IP filtering completely.
+        # This ensures we capture the full domain-wide picture for
+        # kerberos, dce_rpc, rdp, smb_files, smb_mapping, dhcp, weird, ntlm
+        # regardless of whether those hosts triggered Suricata alerts.
+        #
+        # High-volume protocols (conn, dns, ssl, http) keep the IOC filter
+        # to avoid loading gigabytes of background traffic.
+        is_always_capture = bucket in _ALWAYS_CAPTURE_PROTOCOLS
+
+        if not is_always_capture and not (
             (src_ip and src_ip in ioc_ips)
             or (dst_ip and dst_ip in ioc_ips)
             or (cid and cid in ioc_community_ids)
@@ -218,8 +277,6 @@ def _process_lines(
             continue
 
         matched += 1
-        log_type = rec.get("fileset", {}).get("name", "other")
-        bucket = log_type if log_type in records else "other"
 
         normalized = normalize_zeek_record(rec)
 
@@ -309,8 +366,8 @@ def search_zeek(
             "records": _EMPTY_RECORDS(),
         }
 
-    if not ioc_ips and not ioc_community_ids:
-        return {"scanned": 0, "matched": 0, "records": _EMPTY_RECORDS()}
+    # Even with no IOC IPs we still need to scan for always-capture protocols
+    # (kerberos, dce_rpc, rdp, smb, dhcp, weird) — they must be fully ingested.
 
     # ── grep / rg fast path ───────────────────────────────────────────────────
     grep_bin = shutil.which("rg") or shutil.which("grep")

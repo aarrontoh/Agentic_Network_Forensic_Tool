@@ -20,7 +20,7 @@ from models import Finding
 from openai_env import openai_client_kwargs
 
 
-_SYNTH_PROMPT = """You are a senior forensic report writer producing an expert-level incident response report. Given the structured findings below from four independent investigation agents, produce a comprehensive, detailed forensic report.
+_SYNTH_PROMPT = """You are a senior forensic report writer producing an expert-level incident response report that matches the quality of a professional 37-page manual analysis report.
 
 CASE: {case_name}
 INCIDENT: {incident_summary}
@@ -31,53 +31,190 @@ FINDINGS FROM INVESTIGATION AGENTS:
 DATABASE STATISTICS:
 {db_stats}
 
-REPORT REQUIREMENTS:
-1. Executive Summary (2-3 paragraphs for C-suite): What happened, how bad is it, what to do next. No technical jargon.
+REQUIRED REPORT STRUCTURE (produce EXACTLY this hierarchy):
 
-2. Scope and Assumptions: What evidence was available, what wasn't.
+---
+# [Client Name] Network Security Incident Report
+_Generated: [datetime] UTC_
 
-3. For each finding (A, B, C, D), write a DETAILED section with sub-sections:
-   - Title with MITRE ATT&CK technique IDs (e.g., T1133, T1078)
-   - Confidence level and status
-   - Detailed narrative explaining the full evidence chain — not a summary, but a thorough walkthrough
-   - Sub-sections for each distinct phase/aspect (e.g., A.1 RDP Access, A.2 Credential Spraying, A.3 Behavior Shift)
-   - IOC table: list all attacker IPs, hostnames, file hashes, domains with their context
-   - Key evidence items with EXACT IPs, EXACT timestamps (never rounded), and EXACT numbers
-   - For byte counts: always show both raw bytes AND human-readable (e.g., "1,083,179,008 bytes (1,033 MB)")
-   - For host counts: always show exact number (e.g., "49 unique internal hosts", not "multiple hosts")
-   - Distinct attack waves/phases broken down by date
-   - Limitations and gaps
+## Executive Summary
+(3 paragraphs: what happened at a high level, business impact, what needs to happen now — no jargon)
 
-4. Attack Timeline: Detailed chronological table with columns: Timestamp | Source → Destination | Protocol | Description
-   - Include ALL significant events from all four phases
-   - Use exact timestamps from evidence items
+## Scope and Analytical Limitations
+- Evidence sources available (Suricata EVE alerts, Zeek logs, PCAP files, date range)
+- What network evidence CANNOT show (local account creation via GUI, file I/O, clipboard, local credential dumping)
+- Any gaps or caveats in the evidence
 
-5. MITRE ATT&CK Mapping: Table mapping each finding to specific techniques with sub-technique IDs
+---
 
-6. Indicators of Compromise (IOC) Summary Table: All external IPs, domains, filenames, tools identified
+## A. Initial Access (Patient Zero)
+### A.1 Pre-Intrusion Reconnaissance and Probing
+#### A.1.1 External Reconnaissance Activity
+(Characterise the spray: total attempts, unique spray IPs, time window, target host. This is background noise — NOT the attacker.)
 
-7. Recommendations section with THREE priority tiers:
-   - Critical (48-72 hours): Immediate credential reset, remove direct RDP exposure, block known exfil services
-   - High Priority (1-2 weeks): Segment remote access, implement PAM, harden backup access, enforce east-west segmentation
-   - Medium Priority (1-3 months): Deploy monitoring, strengthen credential hygiene, deploy DLP, restrict SAMR/LSARPC
-   Each recommendation should have: title, business risk explanation, technical description, and MITRE mitigation ID
+#### A.1.2 Credential Testing and Validation
+(Identify the REAL attacker: low-volume RDP connection + Kerberos authentication within 60 seconds. Explain the lgallegos credential. EXACT timestamp chain: RDP at T, Kerberos AS at T+Xs. Do NOT confuse spray IPs with the real attacker.)
+
+#### A.1.3 Suricata Detection Context
+(Alert counts, categories, any C2 or credential-related alerts triggered around initial access)
+
+### A.2 IOC Table
+| Type | Value | Context |
+|------|-------|---------|
+(List attacker IP, credential, patient zero hostname, any associated domains)
+
+### A.3 Initial Access Timeline
+| Timestamp | Event | Source → Destination | Protocol | Evidence Source |
+|-----------|-------|---------------------|----------|----------------|
+
+---
+
+## B. Lateral Movement and Discovery
+### B.1 Overview
+(Brief: what the attacker did after gaining access, scale of discovery activity)
+
+### B.2 Discovery
+#### B.2.1 Discovery Waves and Scale
+(THREE distinct waves with exact dates, total ops, unique hosts per wave — from delete.me probing data)
+
+#### B.2.2 Active Directory and Directory Enumeration
+(SAMR operations breakdown: each operation name + exact count. NetrLogonSamLogonEx exact total. NetrShareEnum. DCSync if detected. DPAPI BackupKey exact timestamp — this reveals credential theft intent.)
+
+#### B.2.3 RDP Port Scanning
+(Evidence of RDP-targeted probing across the internal subnet)
+
+#### B.2.4 Cross-Domain Infrastructure Mapping
+(AD forest domains identified: WATER, POWER, PARKS, SAFETY, ADMIN. SYSVOL access. Domain controller targets.)
+
+### B.3 Lateral Movement
+#### B.3.1 Administrative Share Access
+(ADMIN$ and C$ share usage: unique host counts, total operations, which DCs were targeted)
+
+#### B.3.2 Movement into Domain Infrastructure
+(DC-to-DC lateral movement evidence, domain controller IP list)
+
+#### B.3.3 Interactive RDP Sessions
+(RDP pivots from patient zero to internal targets: exact destination IPs and timestamps)
+
+### B.4 MITRE ATT&CK Mapping
+| Technique ID | Sub-technique | Name | Evidence |
+|-------------|---------------|------|---------|
+
+---
+
+## C. Data Exfiltration (Double Extortion)
+### C.1 Overview
+(Summary: destination, protocol, approximate volume, dates)
+
+### C.2 Network Infrastructure Identification
+(temp.sh service description, resolved IP 51.91.79.17, hosting context)
+
+### C.3 DNS Resolution Evidence
+(DNS query count, first/last query timestamps, resolved IP addresses)
+
+### C.4 TLS Connection Evidence
+(TLS session count with SNI=temp.sh, first/last session timestamps, TLS version)
+
+### C.5 Data Volume Analysis
+(Exact dominant bytes from pcap_tcp_conv, converted to MB/GB. Upload vs download directionality. Use MAX(bytes_a_to_b, bytes_b_to_a) — NOT the sum of both.)
+
+### C.6 Compromised Data Identification
+List every sensitive file accessed with exact timestamps:
+- user_db_export.json (PII: SSN, DOB, GPS coordinates)
+- credit_card_transactions_2024.csv (CVVs)
+- DC backup .vib/.vbk files (DC1, DC3, DC7)
+- Law enforcement archives (arrestees.zip, offenders.zip, victims.zip)
+- GPO files (Groups.xml, Registry.xml — used to disable Defender / grant RDP)
+
+### C.7 Archive Compression and Staging
+(Archive file count, staging destination, SMB file operation totals on staging host)
+
+### C.8 Encryption and Analytical Limitations
+(TLS 1.3 prevents payload inspection. What we can confirm vs. what requires host forensics.)
+
+---
+
+## D. Payload Deployment
+### D.1 Overview
+(Manual deployment via RDP: what was deployed, when, to how many hosts)
+
+### D.2 How the Payload was Deployed
+(Mechanism: interactive RDP + SMB file transfer. Patient zero as staging hub.)
+
+### D.3 Reconnaissance before Payload Deployment
+(Pre-deployment: DPAPI BackupKey, backup system access on .39/.35/.36, delete.me Wave 3)
+
+### D.4 Payload Transfer
+For each executable identified, provide: exact filename, first appearance timestamp, source IP, destination IP.
+- kkwlo.exe (primary ransomware)
+- hfs.exe + hfs.ips.txt (HTTP file server for lateral distribution)
+- Microsofts.exe (secondary payload)
+- UninstallWinClient.exe (security tool remover)
+- HOW TO BACK FILES.txt (ransom note — earliest timestamp = encryption time)
+
+Deployment wave order on March 6 (exact minute-level timestamps per destination host).
+
+### D.5 Impact (Final Encryption)
+(First ransom note appearance = encryption completed on that host. Interactive RDP evidence for March 8 return session — approximate duration. Scale of affected hosts.)
+
+---
+
+## MITRE ATT&CK Master Mapping
+| Technique | Sub-technique | Name | Phase | Evidence Summary |
+|-----------|---------------|------|-------|-----------------|
+
+---
+
+## Conclusion and Recommendations
+
+### Critical (48–72 hours)
+1. **Credential Reset** — Business risk: attacker still holds lgallegos credentials. Action: force-reset all domain accounts, rotate service accounts, invalidate all Kerberos tickets (krbtgt double-reset). MITRE M1027.
+2. **Remove Direct RDP Exposure** — Business risk: direct internet-facing RDP enabled initial access. Action: place all RDP behind VPN/jump host, remove port 3389 from internet. MITRE M1042.
+3. **Block Exfil Services** — Business risk: temp.sh (51.91.79.17) may still be active. Action: firewall block, DNS sinkhole temp.sh. MITRE M1037.
+
+### High Priority (1–2 weeks)
+4. **Segment Remote Access** — Deploy PAM solution, enforce MFA on all remote access. MITRE M1032.
+5. **Harden Backup Systems** — Remove backup servers from domain-accessible network segments. MITRE M1030.
+6. **Restrict SAMR/LSARPC** — Apply MS-SAMR restrictions to prevent AD enumeration from workstations. MITRE M1028.
+
+### Medium Priority (1–3 months)
+7. **Deploy EDR on All Hosts** — Enable tamper protection so UninstallWinClient.exe-style removals are blocked. MITRE M1049.
+8. **DLP for Sensitive Files** — Classify and restrict access to PII, financial, and law enforcement files. MITRE M1057.
+9. **Network Segmentation** — Isolate domain controllers from workstations with micro-segmentation. MITRE M1030.
+
+### Strategic (3–6 months)
+10. **Zero Trust Architecture** — Replace flat internal network with identity-based access controls.
+11. **Incident Response Retainer** — Establish IR retainer for rapid response to future incidents.
+
+---
+
+## Appendix A: Master Attack Timeline
+| Timestamp (UTC) | Source IP | Destination IP | Protocol | Event Description |
+|----------------|-----------|---------------|----------|------------------|
+(Comprehensive chronological table — include ALL significant events across all four phases, minimum 25 rows)
+
+---
+
+## Appendix B: Full Indicators of Compromise
+| Type | Value | First Seen | Last Seen | Context |
+|------|-------|-----------|----------|---------|
+(All external IPs, internal pivot targets, malicious filenames, domains, credentials used)
+
+---
 
 CRITICAL RULES:
 - Do NOT invent any data not present in the findings above.
-- Use EXACT numbers, IPs, and timestamps from the evidence items. Never round or approximate.
-- Never say "multiple" or "several" — always use the exact count from evidence.
-- Convert all byte values to human-readable format (KB/MB/GB) alongside raw values.
-- Be honest about confidence levels and limitations.
-- The report should be at least 3,000 words with deep technical detail.
-- Include specific SQL-derived statistics wherever available.
+- Use EXACT numbers, IPs, and timestamps from the evidence items. NEVER round or approximate.
+- Never say "multiple" or "several" — always use exact counts from evidence.
+- For bytes: show both raw value AND human-readable (e.g., "1,083,179,008 bytes (~1,033 MB)").
+- The report must be at least 4,000 words with deep technical detail.
+- If a specific piece of evidence is absent from findings, note it as "not identified in available evidence" rather than skipping the section.
+- Follow the exact section numbering (A.1, A.1.1, B.2.1, C.5, D.4, etc.) — this structure must match the target report format.
+- Be honest about confidence levels and analytical limitations.
+- CRITICAL for Section A: do NOT confuse the spray IPs with the real attacker. The real attacker has a LOW connection count + Kerberos auth correlation. Spray IPs may have thousands of connections — they are scanners, not the attacker.
+- CRITICAL for Section C bytes: use MAX(bytes_a_to_b, bytes_b_to_a) for upload direction — never add both columns. The larger value is the bulk upload direction.
 
-KEY FACTS TO HIGHLIGHT (if present in findings — do NOT fabricate if absent):
-- Section A: Real attacker IP (low-volume, credential-bearing, lgallegos cookie) vs spray campaign (X attempts from Y IPs). Attacker IP ASN. First RDP timestamp. Kerberos AS-REQ delta (seconds after RDP). Patient zero hostname from NetBIOS. March 8 return RDP session from different IP.
-- Section B: THREE distinct waves (March 1/6/8) with per-wave event counts. NetrLogonSamLogonEx total count. Total SAMR operations count. Per-operation SAMR breakdown (SamrOpenGroup, SamrGetMembersInGroup, etc.). NetrShareEnum count. DCSync calls. DPAPI bkrp_BackupKey via \pipe\lsass exact timestamp. AD forest domain names (WATER, POWER, PARKS, SAFETY). delete.me per-wave breakdown. ADMIN$ hosts vs C$ hosts.
-- Section C: Exact upload bytes from pcap_tcp_conv (expect ~1,033 MB) and download bytes (~15 MB). DNS query count for temp.sh. TLS session count with SNI=temp.sh. Total SMB file access events (~27,305). Specific sensitive files: user_db_export.json (SSN/DOB/GPS), credit_card_transactions_2024.csv (CVVs), DC backup .vib files (DC1/DC3/DC7), law enforcement archives (arrestees.zip/offenders.zip/victims.zip), Groups.xml/Registry.xml GPO files. Archive count (~28 files).
-- Section D: kkwlo.exe (primary payload), hfs.exe + hfs.ips.txt (staging tool), Microsofts.exe (secondary payload), UninstallWinClient.exe (security removal). Ransom note "HOW TO BACK FILES.txt" earliest appearance. delete.me three waves with FILE_OPEN/FILE_DELETE split. March 6 executable transfer wave order (.57→.36 first, then .34, then .37). March 8 ~67-minute interactive RDP from external IP. Interactive RDP from .57 to specific targets (.34/.35/.36/.37/.39/.176).
-
-Return the report as a complete Markdown document.
+Return the complete Markdown report. Minimum length: 4,000 words.
 """
 
 

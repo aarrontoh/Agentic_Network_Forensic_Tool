@@ -28,6 +28,9 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Set
 
+# Timeout for the quick IP-presence probe (seconds)
+_PROBE_TIMEOUT = int(os.getenv("PCAP_PROBE_TIMEOUT", "30"))
+
 _CACHE_FILENAME = "pcap_index_cache.json"
 
 
@@ -193,70 +196,80 @@ def _parse_capinfos_ts(ts_str: str) -> Optional[datetime]:
     return None
 
 
+def _pcap_contains_any_ip(tshark_bin: str, pcap_path: str, ips: List[str]) -> bool:
+    """
+    Return True if the PCAP contains at least one packet matching any of the given IPs.
+    Uses tshark -c 1 so it stops at the first hit — very fast on relevant PCAPs
+    and fast-fail on irrelevant ones.  This is event-based filtering.
+    """
+    if not ips or not tshark_bin:
+        return False
+    ip_clause = " || ".join(f"ip.addr == {ip}" for ip in ips)
+    try:
+        proc = subprocess.run(
+            [tshark_bin, "-r", pcap_path, "-Y", ip_clause, "-c", "1",
+             "-T", "fields", "-e", "frame.number"],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+        )
+        return bool(proc.stdout.strip())
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def select_pcaps(
     pcap_index: List[Dict[str, Any]],
     alert_timestamps: List[str],
     max_pcaps: int = 200,
+    ioc_ips: Optional[List[str]] = None,
 ) -> List[str]:
     """
-    Given the index and a list of ISO-8601 alert timestamps, return the paths
-    of PCAP files that likely contain the corresponding traffic.
+    Return paths of PCAP files that actually contain traffic from the IOC IPs.
 
-    Strategy:
-      1. Extract unique dates from alert timestamps (YYYY-MM-DD).
-      2. For each PCAP, check whether its time window overlaps with any alert date.
-         Use capinfos-derived exact ranges when available; fall back to filename date.
-      3. If nothing matched, return the first few PCAPs as a safety net.
+    Strategy (event-based, NOT timestamp-based):
+      1. Build the set of IOC IPs to probe for (passed in, or derived from alert context).
+      2. For each PCAP, run a quick tshark -c 1 probe — include the PCAP only if it
+         contains at least one packet matching any IOC IP.
+      3. Probe runs in parallel threads so all PCAPs are checked quickly.
+      4. If no ioc_ips are provided, return all PCAPs (fallback — let Phase 4 handle filtering).
     """
-    if not alert_timestamps:
-        return [e["path"] for e in pcap_index[:max_pcaps]]
+    all_paths = [e["path"] for e in pcap_index if Path(e["path"]).exists()]
+    if not all_paths:
+        return []
 
-    target_dates: Set[str] = set()
-    target_dts: List[datetime] = []
-    for ts in alert_timestamps:
-        m = re.match(r"(\d{4}-\d{2}-\d{2})", ts)
-        if m:
-            target_dates.add(m.group(1))
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            target_dts.append(dt)
-        except ValueError:
-            pass
+    # If no IOC IPs provided, we cannot do event filtering — return everything.
+    probe_ips: List[str] = list(ioc_ips) if ioc_ips else []
+    if not probe_ips:
+        return all_paths[:max_pcaps]
 
+    tshark_bin = shutil.which("tshark")
+    if not tshark_bin:
+        # tshark not available — fall back to returning all PCAPs
+        return all_paths[:max_pcaps]
+
+    # Probe all PCAPs in parallel
+    num_workers = int(os.getenv("PCAP_THREADS", "6"))
     selected: List[str] = []
-    for entry in pcap_index:
-        added = False
-        if "earliest" in entry and "latest" in entry:
-            pcap_start = _parse_capinfos_ts(entry["earliest"])
-            pcap_end = _parse_capinfos_ts(entry["latest"])
-            if pcap_start and pcap_end and target_dts:
-                if any(pcap_start <= dt <= pcap_end for dt in target_dts):
-                    selected.append(entry["path"])
-                    added = True
+    selected_lock = Lock()
 
-        # Always fall back to filename-derived date if capinfos didn't match.
-        # This handles cases where capinfos reports file-modification times
-        # (e.g. after PCAP redaction) rather than original packet timestamps.
-        if not added and entry.get("date") in target_dates:
-            selected.append(entry["path"])
+    def _probe(path: str) -> None:
+        if _pcap_contains_any_ip(tshark_bin, path, probe_ips):
+            with selected_lock:
+                selected.append(path)
 
+    with ThreadPoolExecutor(max_workers=min(num_workers, len(all_paths))) as pool:
+        futures = [pool.submit(_probe, p) for p in all_paths]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
+
+    # Sort by original index order (preserves chronological ordering)
+    path_order = {p: i for i, p in enumerate(all_paths)}
+    selected.sort(key=lambda p: path_order.get(p, 999999))
+
+    # If nothing matched (e.g. IOC IPs not in any PCAP), return all as fallback
     if not selected:
-        for entry in pcap_index:
-            if entry.get("date") in target_dates:
-                selected.append(entry["path"])
-            if len(selected) >= max_pcaps:
-                break
-
-    if not selected:
-        selected = [e["path"] for e in pcap_index[:5]]
-
-    # Deduplicate while preserving order
-    seen_paths: set = set()
-    deduped: List[str] = []
-    for p in selected:
-        if p not in seen_paths:
-            seen_paths.add(p)
-            deduped.append(p)
-    selected = deduped
+        return all_paths[:max_pcaps]
 
     return selected[:max_pcaps]
