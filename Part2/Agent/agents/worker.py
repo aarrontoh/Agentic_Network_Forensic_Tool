@@ -255,7 +255,9 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
             except Exception as api_err:
                 err_str = str(api_err).lower()
                 is_rate_limit = "429" in err_str or "rate" in err_str or "too many" in err_str
-                is_exhausted = "402" in err_str or "insufficient balance" in err_str or "credit" in err_str or "quota" in err_str
+                is_exhausted = ("402" in err_str or "insufficient balance" in err_str
+                               or "available balance" in err_str or "credit" in err_str
+                               or "quota" in err_str or "balance" in err_str)
 
                 if is_exhausted or is_rate_limit:
                     # Rotate to next key immediately on either credit exhaustion or rate limit.
@@ -265,6 +267,14 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                         new_key = all_cs_keys[cs_key_idx[0]]
                         reason = "credits exhausted" if is_exhausted else "rate limited"
                         print(f"    [Worker {question_id}] Key {reason} — rotating to key {cs_key_idx[0] + 1}/{len(all_cs_keys)}")
+                        if log_callback:
+                            log_callback("key_rotated", {
+                                "question_id": question_id,
+                                "old_key_idx": cs_key_idx[0] - 1,
+                                "new_key_idx": cs_key_idx[0],
+                                "reason": reason,
+                                "iteration": iteration,
+                            })
                         from openai import OpenAI as _OAI
                         client = _OAI(api_key=new_key, base_url=base_url or None, timeout=300)
                         backoff = _INITIAL_BACKOFF
@@ -1132,10 +1142,16 @@ def run_worker(
                 # Inject custom base_url (e.g. CommonStack) into the openai runner
                 # Pass full key list + mutable index for mid-worker key rotation
                 _all_cs_keys = backend_config.get("all_keys", []) if backend_config else []
-                _cs_key_idx = [0]
-                # Find current key's index in all_keys so rotation starts from right place
-                if _all_cs_keys and api_key in _all_cs_keys:
-                    _cs_key_idx = [_all_cs_keys.index(api_key)]
+                # Use shared_key_idx if provided (persists across workers A→B→C→D).
+                # Falls back to finding the current key's position in the list.
+                _cs_key_idx = backend_config.get("shared_key_idx", None)
+                if _cs_key_idx is None:
+                    _cs_key_idx = [0]
+                    if _all_cs_keys and api_key in _all_cs_keys:
+                        _cs_key_idx[0] = _all_cs_keys.index(api_key)
+                # Sync api_key to wherever the shared index currently points
+                if _all_cs_keys and 0 <= _cs_key_idx[0] < len(_all_cs_keys):
+                    api_key = _all_cs_keys[_cs_key_idx[0]]
                 finding_result, iteration = _run_openai_worker(
                     conn, question_id, title, mitre, system_prompt, backend_model, log_callback,
                     api_key=api_key, base_url=_override_base_url,

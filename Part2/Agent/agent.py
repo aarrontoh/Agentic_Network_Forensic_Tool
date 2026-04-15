@@ -432,42 +432,127 @@ def _run_multi_agent_analysis(
     print(f"\n  [Phase 6] Running workers A → B → C → D  ({cs_model})")
     print(f"  [Phase 6] {len(cs_keys)} key(s) available, rotating on credit exhaustion")
 
+    # ── Phase 6 live state — written to progress.json after every worker event ──
+    import datetime as _dt
+    _p6: dict = {
+        "workers": {qid: {"status": "queued", "iteration": 0, "max_iter": 12,
+                          "sql_count": 0, "last_sql": "", "evidence_count": 0,
+                          "confidence": "", "key_idx": 1, "error": ""}
+                   for qid in ("A", "B", "C", "D")},
+        "activity": [],          # rolling last-30 events shown in dashboard
+        "keys": [{"idx": i+1, "status": "ok"} for i in range(len(cs_keys))],
+        "model": cs_model,
+        "total_keys": len(cs_keys),
+    }
+
+    def _p6_flush():
+        _write_progress(work_dir, "multi_agent", {
+            "agent_status": {
+                "worker_id": next((q for q,w in _p6["workers"].items() if w["status"]=="running"), ""),
+                "status": "running",
+                "detail": "",
+            },
+            "phase6": _p6,
+        })
+
+    def _p6_activity(wid: str, typ: str, msg: str):
+        ts = _dt.datetime.utcnow().strftime("%H:%M:%S")
+        _p6["activity"].append({"ts": ts, "wid": wid, "type": typ, "msg": msg})
+        if len(_p6["activity"]) > 40:
+            _p6["activity"] = _p6["activity"][-40:]
+
+    def _phase6_log(event: str, data: dict):
+        """Rich log_callback passed to workers — updates phase6 live state."""
+        qid = data.get("question_id", "?")
+        w = _p6["workers"].get(qid, {})
+
+        if event == "worker_started":
+            w["status"] = "running"
+            w["iteration"] = 0
+            w["sql_count"] = 0
+            w["last_sql"] = ""
+            w["key_idx"] = data.get("key_idx", shared_key_idx[0] + 1)
+            _p6_activity(qid, "start", f"Worker {qid} started — {data.get('backend','')}")
+
+        elif event == "tool_call":
+            sql = (data.get("args") or {}).get("sql", "")
+            w["iteration"] = data.get("iteration", w.get("iteration", 0))
+            w["sql_count"] = w.get("sql_count", 0) + 1
+            w["last_sql"] = sql[:200] if sql else data.get("tool_name", "")
+            _p6_activity(qid, "sql", f"[iter {w['iteration']}] {sql[:100]}" if sql else f"[iter {w['iteration']}] {w['last_sql']}")
+
+        elif event == "worker_completed":
+            w["status"] = "done"
+            w["iteration"] = data.get("iterations", w.get("iteration", 0))
+            w["evidence_count"] = data.get("evidence_count", 0)
+            w["confidence"] = data.get("confidence", "")
+            _p6_activity(qid, "done", f"Worker {qid} done — {data.get('iterations',0)} iters, {data.get('evidence_count',0)} evidence, {data.get('confidence','')}")
+
+        elif event == "backend_failed":
+            _p6_activity(qid, "error", f"Worker {qid} backend failed: {data.get('error','')[:80]}")
+
+        elif event == "key_rotated":
+            new_idx = data.get("new_key_idx", shared_key_idx[0])
+            w["key_idx"] = new_idx + 1
+            # Mark old key as exhausted/rate-limited
+            old_idx = data.get("old_key_idx", new_idx - 1)
+            if 0 <= old_idx < len(_p6["keys"]):
+                _p6["keys"][old_idx]["status"] = data.get("reason", "rotated")
+            _p6_activity(qid, "key", f"Key rotated → key {new_idx+1}/{len(cs_keys)}: {data.get('reason','')}")
+
+        elif event == "rate_limit":
+            _p6_activity(qid, "warn", f"Rate limited — waiting {data.get('backoff_seconds','?')}s")
+
+        elif event == "all_backends_failed":
+            w["status"] = "error"
+            w["error"] = "; ".join(f['error'] for f in data.get("failed_backends", []))
+            _p6_activity(qid, "error", f"All backends failed for Worker {qid}")
+
+        _p6_flush()
+
     def _agent_cb(stage, detail, worker_id, status, **kw):
-        _write_progress(work_dir, stage, {"agent_status": {
-            "worker_id": worker_id, "status": status, "detail": detail
-        }})
+        if worker_id and status == "running":
+            _p6["workers"][worker_id]["status"] = "running"
+        elif worker_id and status == "completed":
+            _p6["workers"][worker_id]["status"] = "done"
+        _p6_flush()
 
     findings: dict = {}
     last_error = None
 
-    for key_idx, api_key in enumerate(cs_keys):
-        cs_backend = {
-            "backend": "openai",
-            "api_key": api_key,
-            "model": cs_model,
-            "base_url": cs_base,
-            "all_keys": cs_keys,
-        }
-        try:
-            findings = run_multi_agent(
-                conn, state,
-                progress_callback=_agent_cb,
-                backend_config=cs_backend,
-                sequential=True,
-                inter_worker_cooldown=60,
-                investigation_notes=notes_summary,
-            )
-            if findings:
-                print(f"  [Phase 6] All workers done (key {key_idx + 1}/{len(cs_keys)})")
-                break
-        except Exception as exc:
-            last_error = str(exc)
-            print(f"  [Phase 6] Key {key_idx + 1} exhausted: {last_error[:100]}")
-            if key_idx < len(cs_keys) - 1:
-                print(f"  [Phase 6] Rotating to key {key_idx + 2}...")
+    # Shared mutable key index — persists across all 4 workers so if Worker A
+    # rotates from key 1 to key 2, Worker B starts on key 2 (not key 1 again).
+    shared_key_idx = [0]
+
+    cs_backend = {
+        "backend": "openai",
+        "api_key": cs_keys[0],
+        "model": cs_model,
+        "base_url": cs_base,
+        "all_keys": cs_keys,
+        "shared_key_idx": shared_key_idx,  # mutable — updated by workers mid-run
+    }
+    try:
+        findings = run_multi_agent(
+            conn, state,
+            progress_callback=_agent_cb,
+            log_callback_override=_phase6_log,
+            backend_config=cs_backend,
+            sequential=True,
+            inter_worker_cooldown=60,
+            investigation_notes=notes_summary,
+        )
+        if findings:
+            print(f"  [Phase 6] All workers done (key {shared_key_idx[0] + 1}/{len(cs_keys)} used)")
+        else:
+            raise SystemExit("ERROR: Workers completed but returned no findings. Check agent_log.json.")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(f"ERROR: Workers failed — {exc}")
 
     if not findings:
-        raise SystemExit(f"ERROR: All keys exhausted. Last error: {last_error}")
+        raise SystemExit("ERROR: No findings produced. All keys may be exhausted.")
 
     for qid, f in findings.items():
         state.findings[qid] = f

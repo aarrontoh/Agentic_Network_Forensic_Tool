@@ -41,6 +41,7 @@ def run_multi_agent(
     conn: sqlite3.Connection,
     state: AnalysisState,
     progress_callback: Optional[Callable] = None,
+    log_callback_override: Optional[Callable] = None,
     backend_config: Optional[Dict[str, str]] = None,
     sequential: bool = False,
     inter_worker_cooldown: int = 0,
@@ -117,13 +118,18 @@ def run_multi_agent(
                 status="running",
             )
 
+        def _combined_log(event, data, _qid=qid):
+            state.log(event, data)
+            if log_callback_override:
+                log_callback_override(event, {**data, "question_id": _qid})
+
         finding = run_worker(
             conn=conn,
             question_id=qid,
             title=worker_config["title"],
             mitre=worker_config["mitre"],
             system_prompt=full_prompt,
-            log_callback=lambda event, data: state.log(event, data),
+            log_callback=_combined_log,
             backend_config=backend_config,
         )
         return qid, finding

@@ -587,11 +587,19 @@ function getPhaseDetail(phaseNum, d) {
       return { status: '', chips: [] };
     }
     case 6: {
-      const as2 = d.agent_status || {};
-      let agentDetail = '';
-      if (as2.worker_id && as2.status === 'running') agentDetail = `Worker ${as2.worker_id}: ${as2.detail || 'investigating...'}`;
-      else if (as2.worker_id && as2.status === 'completed') agentDetail = `Worker ${as2.worker_id}: ${as2.detail || 'done'}`;
-      return { status: agentDetail, chips: [], showWorkers: true };
+      const p6 = d.phase6 || {};
+      const ws = p6.workers || {};
+      const doneCount = Object.values(ws).filter(w => w.status === 'done').length;
+      const runningWorker = Object.entries(ws).find(([,w]) => w.status === 'running');
+      const errCount = Object.values(ws).filter(w => w.status === 'error').length;
+      let statusText = '';
+      if (runningWorker) {
+        const [qid, w] = runningWorker;
+        statusText = `Worker ${qid} (${WORKER_INFO[qid]?.title}) — iteration ${w.iteration||0}/${w.max_iter||12} · ${w.sql_count||0} SQL queries · key ${w.key_idx||1}/${p6.total_keys||'?'}`;
+      } else if (doneCount === 4) statusText = `All 4 workers complete`;
+      else if (doneCount > 0) statusText = `${doneCount}/4 workers complete${errCount?' · '+errCount+' error':''}`;
+      else statusText = 'Workers queued...';
+      return { status: statusText, chips: [], showWorkers: true };
     }
     case 7: return { status: stage === 'complete' ? 'Timeline assembled' : '', chips: [] };
     case 8: {
@@ -773,59 +781,124 @@ function renderKPIs(d) {
   row.innerHTML = kpis.map(k => `<div class="kpi-card"><div class="kpi-value">${k.value}</div><div class="kpi-label">${k.label}</div></div>`).join('');
 }
 
-function _buildWorkerGrid(findings, llmLog, label, labelColor) {
-  let html = `<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:${labelColor};margin:10px 0 6px;font-family:var(--font-mono);">${label}</div>`;
+function renderWorkerCards(d) {
+  const p6 = d.phase6 || {};
+  const workers = p6.workers || {};
+  const activity = p6.activity || [];
+  const keys = p6.keys || [];
+  const model = p6.model || 'claude-opus-4-6';
+  const findings = d.findings || {};
+
+  // ── Key status bar ──────────────────────────────────────────────────────────
+  let html = '';
+  if (keys.length) {
+    html += `<div style="display:flex;align-items:center;gap:6px;margin:10px 0 14px;flex-wrap:wrap;">`;
+    html += `<span style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:1px;">API Keys:</span>`;
+    keys.forEach((k, i) => {
+      const st = k.status || 'ok';
+      const isActive = workers && Object.values(workers).some(w => w.status === 'running' && (w.key_idx === k.idx || w.key_idx === i+1));
+      const color = st === 'ok' ? (isActive ? 'var(--success-green)' : 'var(--text-muted)') : st.includes('exhaust') ? 'var(--error-red)' : 'var(--warning-amber)';
+      const dot = isActive ? '⬤' : (st === 'ok' ? '○' : '✕');
+      html += `<span title="Key ${k.idx}: ${st}" style="font-family:var(--font-mono);font-size:11px;color:${color};font-weight:700;">${dot} K${k.idx}</span>`;
+    });
+    html += `<span style="margin-left:auto;font-size:10px;color:var(--purple);font-family:var(--font-mono);">${esc(model)}</span>`;
+    html += `</div>`;
+  }
+
+  // ── Worker cards ────────────────────────────────────────────────────────────
   html += '<div class="worker-grid">';
   ['A','B','C','D'].forEach(qid => {
+    const w = workers[qid] || {};
     const f = findings[qid];
     const info = WORKER_INFO[qid];
-    const dispatched = llmLog.some(e => e.event_type === 'worker_dispatched' && e.question_id === qid);
-    const started = llmLog.some(e => e.event_type === 'worker_started' && e.question_id === qid);
-    const completed = llmLog.some(e => e.event_type === 'worker_completed' && e.question_id === qid);
-    const isRunning = started && !completed;
-    const isDone = completed || !!f;
-    const isError = f && f.status === 'agent_error';
+    const status = w.status || 'queued';
+    const isRunning = status === 'running';
+    const isDone = status === 'done' || !!f;
+    const isError = status === 'error';
+    const maxIter = w.max_iter || 12;
+    const curIter = w.iteration || 0;
+    const sqlCount = w.sql_count || 0;
+    const pct = isDone ? 100 : Math.min(97, Math.round((curIter / maxIter) * 100));
     const cardCls = isDone ? (isError ? 'error' : 'done') : isRunning ? 'running' : '';
+    const letterColor = isDone ? (isError ? 'var(--error-red)' : 'var(--success-green)') : isRunning ? info.color : 'var(--text-dim)';
 
-    const toolCalls = llmLog.filter(e => e.event_type === 'tool_call' && e.question_id === qid);
-    const maxIter = toolCalls.length ? Math.max(...toolCalls.map(e => e.iteration || 0)) : 0;
-    const lastQuery = toolCalls.length ? (toolCalls[toolCalls.length-1].args || {}).sql || '' : '';
+    html += `<div class="worker-card ${cardCls}" style="position:relative;">`;
 
-    html += `<div class="worker-card ${cardCls}">`;
+    // Header
     html += `<div class="worker-header">`;
-    html += `  <span class="worker-letter" style="color:${isDone ? (isError ? 'var(--error-red)' : 'var(--success-green)') : isRunning ? info.color : ''}">${qid}</span>`;
-    html += `  <div><div class="worker-title">${info.title}</div><div class="worker-subtitle">MITRE ${info.mitre}</div></div>`;
-    if (f) html += `<span class="badge badge-${f.confidence||''}" style="margin-left:auto;font-size:9px;">${f.confidence||''}</span>`;
+    html += `<span class="worker-letter" style="color:${letterColor};${isRunning?'animation:pulse-opacity 1.5s infinite;':''}">${qid}</span>`;
+    html += `<div style="flex:1"><div class="worker-title">${info.title}</div><div class="worker-subtitle">MITRE ${info.mitre}</div></div>`;
+    if (isDone && !isError && w.confidence) html += `<span class="badge badge-${w.confidence}" style="font-size:9px;">${w.confidence}</span>`;
+    if (isError) html += `<span class="badge" style="background:rgba(255,61,0,.15);color:var(--error-red);border-color:var(--error-red);font-size:9px;">ERROR</span>`;
+    if (isRunning) html += `<span style="font-size:9px;color:var(--primary-cyan);animation:pulse-opacity 1.2s infinite;font-family:var(--font-mono);font-weight:700;">LIVE</span>`;
     html += `</div>`;
 
+    // Status row
     if (isRunning || isDone) {
-      const pct = isDone ? 100 : Math.min(100, (maxIter / 30) * 100);
-      html += `<div class="worker-progress">`;
-      html += `  <div class="worker-iter">Iteration ${maxIter} / 30 &mdash; ${toolCalls.length} SQL queries</div>`;
-      html += `  <div class="worker-iter-bar"><div class="worker-iter-fill" style="width:${pct}%"></div></div>`;
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 4px;">`;
+      html += `<span style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);">iter <b style="color:var(--primary-cyan)">${curIter}</b>/${maxIter} &nbsp;·&nbsp; <b style="color:var(--purple)">${sqlCount}</b> SQL</span>`;
+      if (w.key_idx) html += `<span style="font-size:9px;font-family:var(--font-mono);color:var(--text-dim);">key ${w.key_idx}/${keys.length||'?'}</span>`;
       html += `</div>`;
-      if (lastQuery && isRunning) html += `<div class="worker-last-query">${esc(lastQuery.substring(0, 120))}</div>`;
+
+      // Progress bar
+      html += `<div class="worker-iter-bar" style="margin-bottom:8px;">`;
+      const barColor = isDone ? 'var(--success-green)' : isError ? 'var(--error-red)' : info.color;
+      html += `<div class="worker-iter-fill" style="width:${pct}%;background:${barColor};${isRunning?'animation:shimmer 1.5s infinite;':''}"></div>`;
+      html += `</div>`;
+
+      // Current SQL query
+      if (w.last_sql && isRunning) {
+        html += `<div class="worker-last-query" style="font-size:10px;background:rgba(0,0,0,.3);border-left:2px solid ${info.color};padding:5px 8px;border-radius:4px;margin-bottom:6px;white-space:pre-wrap;word-break:break-all;max-height:60px;overflow:hidden;">${esc(w.last_sql.substring(0,180))}</div>`;
+      }
+
+      // Evidence count
+      if (w.evidence_count > 0) {
+        html += `<div style="font-size:10px;font-family:var(--font-mono);color:var(--success-green);margin-top:4px;">✓ ${w.evidence_count} evidence item${w.evidence_count!==1?'s':''} collected</div>`;
+      }
     }
 
-    if (f && f.summary) {
-      html += `<div class="worker-finding-preview">${esc(f.summary.substring(0, 150))}${f.summary.length > 150 ? '...' : ''}</div>`;
-      html += `<div style="margin-top:6px;font-size:10px;font-family:var(--font-mono);color:var(--text-muted);">${f.evidence_count || 0} evidence items</div>`;
+    // Completed summary
+    if (isDone && !isError && f && f.summary) {
+      html += `<div class="worker-finding-preview" style="margin-top:8px;font-size:11px;line-height:1.5;color:var(--text-muted);border-top:1px solid rgba(255,255,255,.05);padding-top:8px;">${esc(f.summary.substring(0,200))}${f.summary.length>200?'…':''}</div>`;
     }
 
-    if (!dispatched && !started && !isDone) {
-      html += `<div style="font-size:11px;color:var(--text-dim);margin-top:8px;font-style:italic;">Queued...</div>`;
+    // Error message
+    if (isError && w.error) {
+      html += `<div style="margin-top:6px;font-size:10px;color:var(--error-red);font-family:var(--font-mono);word-break:break-all;">${esc(w.error.substring(0,120))}</div>`;
+    }
+
+    // Queued state
+    if (status === 'queued') {
+      html += `<div style="margin-top:10px;font-size:11px;color:var(--text-dim);font-family:var(--font-mono);">— queued —</div>`;
     }
 
     html += `</div>`;
   });
   html += '</div>';
-  return html;
-}
 
-function renderWorkerCards(d) {
-  const findings = d.findings || {};
-  const llmLog = d.llm_log || [];
-  return _buildWorkerGrid(findings, llmLog, '▸ Claude Opus 4.6 (CommonStack AI)', 'var(--purple)');
+  // ── Activity feed ──────────────────────────────────────────────────────────
+  if (activity.length) {
+    const TYPE_COLOR = { start:'#00e5ff', done:'#00e676', sql:'#b388ff', key:'#ff9f43', warn:'#ffb300', error:'#ff3d00' };
+    const TYPE_LABEL = { start:'START', done:'DONE', sql:'SQL', key:'KEY', warn:'WARN', error:'ERR' };
+    html += `<div style="margin-top:14px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:10px 12px;">`;
+    html += `<div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:8px;font-family:var(--font-mono);">Live Activity Feed</div>`;
+    html += `<div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;" id="phase6-activity">`;
+    const recent = activity.slice(-25);
+    recent.forEach(ev => {
+      const c = TYPE_COLOR[ev.type] || '#8a9bb2';
+      const lbl = TYPE_LABEL[ev.type] || ev.type;
+      const wColor = WORKER_INFO[ev.wid] ? WORKER_INFO[ev.wid].color : 'var(--text-muted)';
+      html += `<div style="display:flex;gap:6px;align-items:flex-start;font-size:10px;font-family:var(--font-mono);padding:2px 0;border-bottom:1px solid rgba(255,255,255,.03);">`;
+      html += `<span style="color:var(--text-dim);flex-shrink:0;">${esc(ev.ts||'')}</span>`;
+      html += `<span style="color:${wColor};font-weight:700;flex-shrink:0;width:14px;">${esc(ev.wid||'')}</span>`;
+      html += `<span style="background:${c}22;color:${c};padding:0 4px;border-radius:3px;font-size:9px;font-weight:700;flex-shrink:0;min-width:36px;text-align:center;">${lbl}</span>`;
+      html += `<span style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;" title="${esc(ev.msg||'')}">${esc((ev.msg||'').substring(0,100))}</span>`;
+      html += `</div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  return html;
 }
 
 // ═══════════════════════════════════════════════
@@ -1157,7 +1230,15 @@ function esc(s) { if(!s) return ''; const d=document.createElement('div'); d.tex
 function fmt(iso) { if(!iso) return '---'; try { const d=new Date(iso+'Z'); return d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}); } catch { return iso; } }
 
 async function fetchProgress() {
-  try { const res = await fetch('progress.json?_='+Date.now()); if (res.ok) renderLive(await res.json()); } catch(_) {}
+  try {
+    const res = await fetch('progress.json?_='+Date.now());
+    if (res.ok) {
+      renderLive(await res.json());
+      // Auto-scroll activity feed to bottom after render
+      const feed = document.getElementById('phase6-activity');
+      if (feed) feed.scrollTop = feed.scrollHeight;
+    }
+  } catch(_) {}
 }
 fetchProgress();
 setInterval(fetchProgress, 2000);
