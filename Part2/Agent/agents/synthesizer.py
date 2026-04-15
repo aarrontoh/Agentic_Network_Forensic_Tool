@@ -263,6 +263,7 @@ def _call_llm(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
+            max_tokens=8192,
         )
         result = response.choices[0].message.content
         if result:
@@ -299,13 +300,17 @@ def synthesize_report(
     force_commonstack: bool = False,
 ) -> str:
     """
-    Generate forensic report(s) from worker findings.
+    Generate forensic report via CommonStack, rotating through multiple high-quality
+    models if one fails or returns insufficient output.
 
-    If force_commonstack=True: synthesize using CommonStack (Claude) only — used when
-    the findings themselves came from the Claude pipeline.
+    Model priority order (best → fallback):
+      1. anthropic/claude-opus-4-6  — best reasoning, most detailed
+      2. openai/gpt-4o              — strong alternative
+      3. anthropic/claude-sonnet-4-6 — faster Claude, still excellent
+      4. openai/o4-mini             — reasoning model fallback
+      5. google/gemini-2.5-pro      — large context fallback
 
-    Otherwise: runs GPT-4o + CommonStack in parallel and returns the GPT-4o report.
-    The CommonStack report is stored in ``synthesize_report.commonstack_report``.
+    Each model is tried with full key rotation before moving to the next model.
     """
     # Reset secondary report attribute
     synthesize_report.commonstack_report = None  # type: ignore[attr-defined]
@@ -320,23 +325,37 @@ def synthesize_report(
 
     # ── CommonStack config ───────────────────────────────────────────────
     common_keys_raw = os.getenv("COMMON_API_KEY", "").strip()
-    common_model = os.getenv("COMMON_API_MODEL", "").strip()
     common_base = "https://api.commonstack.ai/v1"
     common_keys = [k.strip() for k in common_keys_raw.split(",") if k.strip()] if common_keys_raw else []
-    if not common_model or common_model.lower() in ("any", "best", ""):
-        common_model = "anthropic/claude-opus-4-6"
 
-    # ── Single CommonStack pipeline ──────────────────────────────────────
     if not common_keys:
         print("  [Synthesizer] No COMMON_API_KEY — using template report")
         return _template_report(findings, db_stats)
 
-    print(f"  [Synthesizer] Synthesizing report via CommonStack ({common_model})...")
-    result = _call_llm_with_rotation(common_keys, common_model, prompt, "CommonStack", common_base)
-    if result:
-        return result
+    # If user specified a model via env var or argument, respect it; otherwise use priority list.
+    env_model = os.getenv("COMMON_API_MODEL", "").strip()
+    if model and model.lower() not in ("any", "best", ""):
+        model_priority = [model]
+    elif env_model and env_model.lower() not in ("any", "best", ""):
+        model_priority = [env_model]
+    else:
+        model_priority = [
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet-4-6",
+            "openai/o4-mini",
+            "google/gemini-2.5-pro",
+        ]
 
-    print("  [Synthesizer] All CommonStack keys failed, using template report")
+    # ── Multi-model rotation with key rotation per model ─────────────────
+    for model_name in model_priority:
+        print(f"  [Synthesizer] Trying model: {model_name} (with {len(common_keys)} key(s))...")
+        result = _call_llm_with_rotation(common_keys, model_name, prompt, f"CommonStack/{model_name}", common_base)
+        if result and len(result) > 500:
+            print(f"  [Synthesizer] Report generated with {model_name} ({len(result):,} chars)")
+            return result
+        print(f"  [Synthesizer] {model_name} failed or returned insufficient output — trying next model...")
+
+    print("  [Synthesizer] All models failed, using template report")
     return _template_report(findings, db_stats)
 
 

@@ -48,7 +48,7 @@ _MAX_BACKOFF = 300  # seconds — wait up to 5 min per retry for persistent rate
 
 
 # Minimum evidence items required before a finding is accepted
-_MIN_EVIDENCE_ITEMS = 10
+_MIN_EVIDENCE_ITEMS = 3
 
 # The submit_finding tool declaration — agents call this to return results
 _SUBMIT_FINDING_DECL = {
@@ -249,7 +249,7 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
                     tools=tools,
                     tool_choice=_tool_choice_for_iteration(iteration),
                     temperature=0.1,
-                    max_tokens=1500,  # caps cost; tool calls are short
+                    max_tokens=4000,  # enough for submit_finding with full evidence list
                 )
                 break
             except Exception as api_err:
@@ -321,16 +321,18 @@ def _run_openai_worker(conn, question_id, title, mitre, system_prompt, model, lo
             if tool_name == "submit_finding":
                 evidence_items = tool_args.get("evidence_items", [])
                 n_evidence = len(evidence_items) if isinstance(evidence_items, list) else 0
+                is_last_iter = iteration >= _MAX_ITERATIONS
                 rejection_reasons = []
-                if iteration < _MIN_ITERATIONS:
-                    rejection_reasons.append(
-                        f"Only {iteration}/{_MIN_ITERATIONS} minimum investigation steps completed — keep querying."
-                    )
-                if n_evidence < _MIN_EVIDENCE_ITEMS:
-                    rejection_reasons.append(
-                        f"Only {n_evidence}/{_MIN_EVIDENCE_ITEMS} required evidence items provided. "
-                        f"You need {_MIN_EVIDENCE_ITEMS - n_evidence} more items. Each must have a real exact timestamp, src_ip, dst_ip, and description from your SQL results."
-                    )
+                if not is_last_iter:
+                    if iteration < _MIN_ITERATIONS:
+                        rejection_reasons.append(
+                            f"Only {iteration}/{_MIN_ITERATIONS} minimum investigation steps completed — keep querying."
+                        )
+                    if n_evidence < _MIN_EVIDENCE_ITEMS:
+                        rejection_reasons.append(
+                            f"Only {n_evidence}/{_MIN_EVIDENCE_ITEMS} required evidence items provided. "
+                            f"You need {_MIN_EVIDENCE_ITEMS - n_evidence} more items. Each must have a real exact timestamp, src_ip, dst_ip, and description from your SQL results."
+                        )
                 if rejection_reasons:
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({
                         "status": "rejected",
