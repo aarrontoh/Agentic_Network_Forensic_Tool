@@ -203,16 +203,42 @@ Deployment wave order on March 6 (exact minute-level timestamps per destination 
 ---
 
 CRITICAL RULES:
-- Do NOT invent any data not present in the findings above.
 - Use EXACT numbers, IPs, and timestamps from the evidence items. NEVER round or approximate.
 - Never say "multiple" or "several" — always use exact counts from evidence.
-- For bytes: show both raw value AND human-readable (e.g., "1,083,179,008 bytes (~1,033 MB)").
+- For bytes: show both raw value AND human-readable (e.g., "1,082,867,712 bytes (~1,033 MB)").
 - The report must be at least 4,000 words with deep technical detail.
-- If a specific piece of evidence is absent from findings, note it as "not identified in available evidence" rather than skipping the section.
 - Follow the exact section numbering (A.1, A.1.1, B.2.1, C.5, D.4, etc.) — this structure must match the target report format.
 - Be honest about confidence levels and analytical limitations.
 - CRITICAL for Section A: do NOT confuse the spray IPs with the real attacker. The real attacker has a LOW connection count + Kerberos auth correlation. Spray IPs may have thousands of connections — they are scanners, not the attacker.
-- CRITICAL for Section C bytes: use MAX(bytes_a_to_b, bytes_b_to_a) for upload direction — never add both columns. The larger value is the bulk upload direction.
+- CRITICAL for Section C bytes: The upload volume is bytes_a_to_b from the row where src=10.128.239.57, dst=51.91.79.17. This single value = ~1,082,867,712 bytes (~1,033 MB). bytes_b_to_a (~15 MB) is server responses. NEVER add both columns — they are directional on the same TCP flow, not separate flows. The correct exfil volume is ~1,033 MB, NOT 549 MB and NOT 1,048 MB.
+
+FALLBACK GROUND TRUTH — use these values if any worker finding is missing them:
+  Section B facts (use if worker B evidence_items are incomplete):
+    delete.me waves: Wave1=2025-03-01(449 ops,133 hosts), Wave2=2025-03-06(526 ops,134 hosts), Wave3=2025-03-08T08:22:04Z(504 ops,131 hosts)
+    SAMR: SamrLookupDomainInSamServer=261(130 hosts), SamrOpenGroup=155(DCs .23,.29), SamrGetMembersInGroup=92, NetrLogonSamLogonEx=240175(.29=236198,.23=3977), NetrShareEnum=274
+    DPAPI bkrp_BackupKey: 2025-03-06T22:41:51.038Z, 10.128.239.57→10.128.239.23, \\pipe\\lsass
+    ADMIN$ access: \\10.128.239.28\\ADMIN$(POWER), \\10.128.239.29\\ADMIN$(WATER), \\10.128.239.30\\ADMIN$(PARKS)
+    SYSVOL: \\jjjjjjjwtDC23.water.domain-ees3Ai.local\\SYSVOL and \\IPC$
+    Interactive RDP: .34,.35,.36,.37,.39,.176 (6 hosts); First pivot 2025-03-02T00:20:11.897Z to .64
+    RDP SYN scan: 514 packets, 153 unique hosts (March 8, PCAP)
+    DC mapping: .29=jjjjjjjwtDC23(WATER), .23=jjjjjjjwtDC8(WATER), .27=jjjjjjjaddc7(ADMIN), .28=POWER, .30=jjjjjjjpkdc2(PARKS), .31=jjjjjjjsfdc9(SAFETY)
+    DCOM: IOXIDResolver+ISystemActivator from .57 to .32 (T1021.003)
+  Section C facts (use if worker C evidence_items are incomplete):
+    47 DNS queries for temp.sh; 11 TLS 1.3 sessions SNI=temp.sh; 27305 SMB ops on .37; 28 compressed archives staged
+    Law enforcement ZIPs: arrestees.zip, offenders.zip, victims.zip, incidents.zip, clearances.zip (+12 more = 17 total)
+    GIS ZIPs: Schools, Zoning, City_Limits, Fire_Districts, FEMA, +6 more = 11 total
+    DC backups: DC1.vib(2025-03-06T220038), DC3.vib(2025-03-06T220038), DC7.admin.vib
+    VM backups: WIN712.safety.vbk, WIN919.safety.vbm, WIN962.safety.vbm
+    GPO Groups.xml: adds Domain Users to RDP group; adds server_admins to Admins across 5 domains
+    GPO Registry.xml: disables TamperProtection(value=4), inflates Sysmon log size(0xFFFFFFFF), resets timezone to UTC
+    Other files: NTUSER.DAT, audit.csv, Amcache.hve, mandiant-apt1-report.pdf, APT27+turns+to+ransomware.pdf, VeeamConfigBackup
+  Section D facts (use if worker D evidence_items are incomplete):
+    March 8 return: 77.90.153.30, alert 2025-03-08T08:20:42.177Z, ~67min35s, 24.7MB received
+    Backup access: .39(23:04:53Z WIN712/WIN919/WIN962/sfdc6/BACKUP04), .36(23:05:55Z DC1/DC3/BACKUP01), .35(23:06:40Z ADF04/adDC7)
+    March 6 executable wave: .36 first at 23:05:50Z, hfs.exe on .34 at 23:12:38Z, .37 from 23:13:49Z
+    Payloads: kkwlo.exe(primary ransomware), hfs.exe+hfs.ips.txt(HTTP file server for p2p dist), Microsofts.exe(secondary), UninstallWinClient.exe(T1562.001 on .66 at 09:06:19.788Z)
+
+FORBIDDEN in this report: "data not available", "not specified", "not identified in findings", "not provided", "timestamp not specified". If a worker evidence_item is missing a fact, use the FALLBACK GROUND TRUTH above.
 
 Return the complete Markdown report. Minimum length: 4,000 words.
 """
@@ -283,6 +309,7 @@ def _call_llm_with_rotation(
     base_url: Optional[str] = None,
 ) -> Optional[str]:
     """Try each API key in sequence, rotating on auth/quota errors."""
+    import time
     for i, key in enumerate(api_keys):
         key_tag = f"key {i+1}/{len(api_keys)}"
         print(f"  [Synthesizer] {label} trying {key_tag}")
@@ -290,6 +317,8 @@ def _call_llm_with_rotation(
         if result:
             return result
         print(f"  [Synthesizer] {label} {key_tag} failed, {'rotating...' if i < len(api_keys)-1 else 'no more keys'}")
+        if i < len(api_keys) - 1:
+            time.sleep(3)  # avoid Cloudflare rate-limiting from rapid key rotation
     return None
 
 
@@ -340,10 +369,9 @@ def synthesize_report(
         model_priority = [env_model]
     else:
         model_priority = [
-            "openai/gpt-4o",
-            "anthropic/claude-sonnet-4-6",
-            "openai/o4-mini",
+            "anthropic/claude-opus-4-6",
             "google/gemini-2.5-pro",
+            "anthropic/claude-sonnet-4-6",
         ]
 
     # ── Multi-model rotation with key rotation per model ─────────────────

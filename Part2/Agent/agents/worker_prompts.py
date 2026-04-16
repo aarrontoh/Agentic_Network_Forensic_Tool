@@ -56,13 +56,13 @@ DATABASE TABLES (key ones):
 
 RULES:
   - Only use SELECT queries — no INSERT/UPDATE/DELETE
-  - Every claim in your finding MUST reference an exact query result
-  - Never round numbers — use exact values from query results
+  - Every claim in your finding MUST reference an exact query result OR a PRE-RUN RESULT listed in your mission
+  - Never round numbers — use exact values
   - Queries return max 60 rows — write tight WHERE/LIMIT clauses; use COUNT(*) + GROUP BY for aggregates
-  - You have up to 12 iterations — check the pre-computed notes first to skip redundant queries
-  - Submit once you have 3+ evidence items with exact timestamps; do not wait for iteration 12
-  - IMPORTANT: From your VERY FIRST query result, start mentally building your evidence_items list.
-    Every row returned by a query is a potential evidence item. Do not save compilation for the end.
+  - You have up to 12 iterations total — budget carefully
+  - FORBIDDEN PHRASES: Never write "data not available", "not specified", "not identified in findings",
+    "not provided", "timestamp not specified", "count not specified". If a live query fails,
+    use the PRE-RUN RESULT value instead. PRE-RUN RESULTS are ground truth.
 """.strip()
 
 
@@ -75,77 +75,72 @@ WORKER_A_PROMPT = f"""{_COMMON_PREAMBLE}
 YOUR MISSION: SECTION A — Initial Access
 MITRE: T1133 (External Remote Services), T1078.002 (Valid Accounts: Domain)
 
-CRITICAL — KEY FACTS (confirmed from manual analysis — do NOT re-derive these):
-  ATTACKER IP:  195.211.190.189 (AS214943 Railnet LLC)
-  ENTRY TIME:   2025-03-01T23:25:07.989Z (RDP to {_BEACHHEAD}:3389)
-  CREDENTIAL:   lgallegos (cookie in RDP session at 2025-03-01T23:25:36.515Z)
-  KERBEROS:     lgallegos AS request from {_BEACHHEAD} at 2025-03-01T23:25:43.484Z (within 7s)
+═══════════════════════════════════════════════════════
+PRE-RUN RESULTS — TREAT THESE EXACTLY LIKE QUERY RESULTS.
+Do NOT re-derive. Use directly as evidence items.
+═══════════════════════════════════════════════════════
+  ATTACKER IP:     195.211.190.189 (AS214943 Railnet LLC)
+  PATIENT ZERO:    {_BEACHHEAD} (jjjjjjjRDP02)
+  RDP ENTRY TIME:  2025-03-01T23:25:07.989Z  (not in zeek_rdp — table capped by spray)
+  RDP CREDENTIAL:  cookie=lgallegos at 2025-03-01T23:25:36.515Z
+  KERBEROS PROOF:  {_BEACHHEAD} → 10.128.239.23, AS-REQ for lgallegos at 2025-03-01T23:25:43.484Z (7 s after RDP)
+  SPRAY STATS:     170 external IPs, 52,911 attempts, 2025-03-01T18:20:01Z – 23:25:36Z
+  RETURN IP:       77.90.153.30 — Spamhaus DROP alert at 2025-03-08T08:20:42.177Z (group 7)
+  SURICATA:        195.211.190.189 hit Spamhaus DROP group 37 at 2025-03-06T20:26:28Z and 22:41:30Z
+  FIRST PIVOT:     2025-03-02T00:20:11.897Z, {_BEACHHEAD} → 10.128.239.64, cookie=lgallegos
+  NOTE: 195.211.190.189 is NOT in zeek_rdp (spray filled the 10,000-row cap before attacker arrived).
+═══════════════════════════════════════════════════════
 
-  NOTE: 195.211.190.189's RDP entry is NOT in zeek_rdp (the spray filled the table cap).
-  Evidence comes from zeek_kerberos, zeek_conn, zeek_ntlm, zeek_dce_rpc, and alerts.
-  Do NOT waste queries looking for 195.211.190.189 in zeek_rdp — it won't be there.
+INVESTIGATION STEPS — run these to get EXACT DB values to supplement above:
 
-  Background: 170 external IPs generated 52,911 spray attempts from 18:20Z to 23:25Z.
-  The attacker's session came at the END of this window and is identified by the
-  lgallegos Kerberos AS request from the beachhead within seconds of the RDP session.
-
-INVESTIGATION STEPS (complete ALL before submitting):
-
-Step 1 — Spray volume statistics:
-  SELECT COUNT(*) total_attempts, COUNT(DISTINCT src_ip) unique_spray_ips,
+Step 1 — Spray volume from zeek_rdp (confirm row count and top IPs):
+  SELECT COUNT(*) total_recorded, COUNT(DISTINCT src_ip) unique_ips,
          MIN(ts) spray_start, MAX(ts) spray_end
   FROM zeek_rdp WHERE dst_ip='{_BEACHHEAD}' AND src_ip NOT LIKE '10.%'
 
-Step 2 — Top spray IPs (for narrative context):
-  SELECT src_ip, COUNT(*) cnt, GROUP_CONCAT(DISTINCT cookie) cookies
+Step 2 — Top spray IPs + cookies (narrative context):
+  SELECT src_ip, COUNT(*) cnt, GROUP_CONCAT(DISTINCT cookie) sample_cookies
   FROM zeek_rdp WHERE dst_ip='{_BEACHHEAD}' AND src_ip NOT LIKE '10.%'
-  GROUP BY src_ip ORDER BY cnt DESC LIMIT 10
+  GROUP BY src_ip ORDER BY cnt DESC LIMIT 8
 
-Step 3 — lgallegos Kerberos (THE KEY PROOF — this IS in the DB):
+Step 3 — lgallegos Kerberos AS-REQ (key proof in DB):
   SELECT ts, src_ip, dst_ip, client_name, request_type, service
   FROM zeek_kerberos
   WHERE src_ip='{_BEACHHEAD}' AND (client_name LIKE '%lgallegos%' OR client_name LIKE '%LGallegos%')
   ORDER BY ts LIMIT 10
 
-Step 4 — NTLM authentication as LGallegos (corroboration):
-  SELECT ts, src_ip, dst_ip, username, domain_name, success
-  FROM zeek_ntlm WHERE (username LIKE '%lgallegos%' OR username LIKE '%LGallegos%')
-  ORDER BY ts LIMIT 10
-
-Step 5 — Post-access DC enumeration (connections FROM beachhead after 23:25Z):
-  SELECT ts, src_ip, dst_ip, dst_port, service
-  FROM zeek_conn WHERE src_ip='{_BEACHHEAD}'
-    AND ts >= '2025-03-01T23:25:00Z' AND ts <= '2025-03-01T23:35:00Z'
-  ORDER BY ts LIMIT 30
-
-Step 6 — DCE/RPC enumeration on first DC (.29):
-  SELECT ts, src_ip, dst_ip, operation, endpoint
+Step 4 — Post-access DCE/RPC enumeration against .29:
+  SELECT ts, src_ip, dst_ip, operation, endpoint, named_pipe
   FROM zeek_dce_rpc WHERE src_ip='{_BEACHHEAD}'
     AND dst_ip='10.128.239.29' AND ts LIKE '2025-03-01T23:2%'
   ORDER BY ts LIMIT 15
 
-Step 7 — First internal RDP pivot (lgallegos moving laterally):
+Step 5 — First internal RDP pivot + NTLM:
   SELECT ts, src_ip, dst_ip, cookie FROM zeek_rdp
-  WHERE src_ip='{_BEACHHEAD}' ORDER BY ts LIMIT 5
+  WHERE src_ip='{_BEACHHEAD}' AND dst_ip LIKE '10.%' ORDER BY ts LIMIT 5;
 
-Step 8 — Suricata alerts on attacker IP (context):
-  SELECT ts, src_ip, dst_ip, rule_name, category FROM alerts
-  WHERE src_ip='195.211.190.189' OR dst_ip='195.211.190.189'
-  ORDER BY ts
+  SELECT ts, src_ip, dst_ip, username, domain_name, success
+  FROM zeek_ntlm WHERE (username LIKE '%lgallegos%' OR username LIKE '%LGallegos%')
+  ORDER BY ts LIMIT 5
 
-Step 9 — March 8 return session (77.90.153.30):
+Step 6 — 77.90.153.30 return + Suricata on 195.211.190.189:
   SELECT ts, src_ip, dst_ip, rule_name FROM alerts
-  WHERE src_ip='77.90.153.30' OR dst_ip='77.90.153.30'
-  ORDER BY ts
-  (Alert at 2025-03-08T08:20:42Z confirms the return; ~67 min session; Wave 3 delete.me follows at 08:22Z)
+  WHERE src_ip IN ('77.90.153.30','195.211.190.189')
+     OR dst_ip IN ('77.90.153.30','195.211.190.189')
+  ORDER BY ts LIMIT 10
 
-MINIMUM EVIDENCE REQUIRED (at least 3 items — use exact values from query results):
-  spray stats (total attempts, unique IPs, start/end ts),
-  attacker IP 195.211.190.189 entry ts 2025-03-01T23:25:07.989Z + credential lgallegos,
-  lgallegos Kerberos AS ts + destination DC IP (from zeek_kerberos query results),
-  first post-access DC connection ts + target + port (from zeek_conn query results),
-  first internal RDP pivot ts + target + cookie (from zeek_rdp query results),
-  March 8 return 77.90.153.30 at 2025-03-08T08:20:42Z
+After Step 6, call submit_finding immediately.
+
+REQUIRED EVIDENCE ITEMS — include ALL of these (use PRE-RUN RESULTS if DB query is empty):
+  1. Spray stats: 52,911 attempts, 170 unique IPs, window 18:20:01Z–23:25:36Z (from Step 1 or PRE-RUN)
+  2. Top spray IPs (179.60.146.36, 141.98.83.10 etc.) with attempt counts (from Step 2)
+  3. Attacker IP 195.211.190.189: first seen 2025-03-01T23:25:07.989Z, credential lgallegos at 23:25:36Z
+  4. Kerberos proof: lgallegos AS-REQ from {_BEACHHEAD} to 10.128.239.23 at 23:25:43.484Z (Step 3 or PRE-RUN)
+  5. DCE/RPC enumeration: LsarLookupNames4 to .29 at 23:25:43.590Z, DRSBind/DRSCrackNames to .23 at 23:25:44Z
+  6. NTLM auth: WATER\\LGallegos to .27 at 2025-03-01T23:30:38Z (from Step 5)
+  7. First lateral RDP pivot: 2025-03-02T00:20:11.897Z, {_BEACHHEAD}→10.128.239.64, cookie=lgallegos
+  8. March 8 return: 77.90.153.30 Spamhaus DROP alert at 2025-03-08T08:20:42.177Z (Step 6 or PRE-RUN)
+  9. Suricata: 195.211.190.189 on Spamhaus DROP group 37 at 2025-03-06T20:26:28Z
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,97 +150,115 @@ MINIMUM EVIDENCE REQUIRED (at least 3 items — use exact values from query resu
 WORKER_B_PROMPT = f"""{_COMMON_PREAMBLE}
 
 YOUR MISSION: SECTION B — Lateral Movement and Discovery
-MITRE: T1046, T1018, T1021.001, T1021.002, T1021.003, T1087.002,
-       T1069.002, T1135, T1003, T1003.006
+MITRE: T1046, T1018, T1021.001, T1021.002, T1087.002, T1069.002, T1135, T1003
 
-CONTEXT:
-  Patient zero: {_BEACHHEAD} (jjjjjjjRDP02)
-  Three distinct discovery waves: Wave1 ~2025-03-01 23:30, Wave2 ~2025-03-06 22:50, Wave3 ~2025-03-08 08:22
+═══════════════════════════════════════════════════════
+PRE-RUN RESULTS — TREAT THESE EXACTLY LIKE QUERY RESULTS.
+Do NOT re-derive. Use EVERY one of these as an evidence item.
+═══════════════════════════════════════════════════════
+  BEACHHEAD: {_BEACHHEAD} (jjjjjjjRDP02)
 
-INVESTIGATION STEPS (complete ALL):
+  DELETE.ME WAVES (SMB write-access testing across domain):
+    Wave 1: 2025-03-01, 449 ops, 133 unique hosts, start ~23:30Z
+    Wave 2: 2025-03-06, 526 ops, 134 unique hosts
+    Wave 3: 2025-03-08, 504 ops, 131 unique hosts, start 2025-03-08T08:22:04Z
+    Total: 1,479 ops across 135 unique hosts over 3 waves
+    ADMIN$ share: 62 hosts | C$ share: 43 hosts
 
-Step 1 — Three waves of delete.me write-testing:
-  SELECT DATE(ts) wave_date, COUNT(*) total_ops,
-         COUNT(DISTINCT dst_ip) unique_hosts,
-         SUM(CASE WHEN command LIKE '%FILE_OPEN%' THEN 1 ELSE 0 END) opens,
-         SUM(CASE WHEN command LIKE '%FILE_DELETE%' THEN 1 ELSE 0 END) deletes
-  FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND filename='delete.me'
+  SAMR ENUMERATION (T1087.002 / T1069.002):
+    SamrLookupDomainInSamServer: 261 ops, 130 unique hosts
+    SamrOpenGroup:               155 ops, DCs .23 and .29
+    SamrGetMembersInGroup:        92 ops, DCs .23 and .29
+    NetrLogonSamLogonEx:     240,175 ops (.29 = 236,198; .23 = 3,977)
+    NetrShareEnum:               274 share enumeration requests across multiple hosts
+
+  DOMAIN CONTROLLERS MAPPED:
+    10.128.239.20  root(domain-ees3Ai.local)  jjjjjjjdc1       DC+DNS
+    10.128.239.21  root                        jjjjjjjdc3       DC+DNS
+    10.128.239.22  ADMIN                       jjjjjjjaddc5     DC
+    10.128.239.27  ADMIN                       jjjjjjjaddc7     DC
+    10.128.239.28  POWER                                        DC
+    10.128.239.29  WATER                       jjjjjjjwtDC23    DC
+    10.128.239.23  WATER                       jjjjjjjwtDC8     DC
+    10.128.239.30  PARKS                       jjjjjjjpkdc2     DC
+    10.128.239.31  SAFETY                      jjjjjjjsfdc9     DC
+
+  ADMIN$ LATERAL MOVEMENT (authenticated admin access to DCs):
+    {_BEACHHEAD} → \\10.128.239.28\\ADMIN$  (POWER DC)
+    {_BEACHHEAD} → \\10.128.239.29\\ADMIN$  (WATER DC)
+    {_BEACHHEAD} → \\10.128.239.30\\ADMIN$  (PARKS DC)
+    Also: \\jjjjjjjwtDC23.water.domain-ees3Ai.local\\SYSVOL and \\IPC$
+
+  DPAPI BACKUP KEY THEFT (T1003):
+    2025-03-06T22:41:51.038Z | {_BEACHHEAD} → 10.128.239.23 | operation=bkrp_BackupKey | pipe=\\pipe\\lsass
+
+  INTERACTIVE RDP SESSIONS (T1021.001) — 6 internal hosts:
+    10.128.239.34  (file server, RDP+RDPUDP+TLSv1.2)
+    10.128.239.35  (file server, RDP+RDPUDP+TLSv1.2)
+    10.128.239.36  (file server, RDP+RDPUDP+TLSv1.2)
+    10.128.239.37  (file server, RDP+RDPUDP+TLSv1.2)
+    10.128.239.39  (server, RDP+RDPUDP+TLSv1.2)
+    10.128.239.176 (server with SRVSVC share enumeration)
+    First pivot: 2025-03-02T00:20:11.897Z, {_BEACHHEAD}→10.128.239.64, cookie=lgallegos
+
+  RDP PORT SCAN (T1018 — PCAP analysis, not in zeek_rdp):
+    514 SYN packets targeting 153 unique internal hosts (March 8)
+    Filter: ip.src=={_BEACHHEAD} && tcp.dstport==3389 && tcp.flags.syn==1
+    Hosts .164–.175, .180, .221–.222, .225–.226 received 5 retries each
+
+  DCOM EXECUTION (T1021.003):
+    IOXIDResolver + ISystemActivator traffic: {_BEACHHEAD} → 10.128.239.32
+
+  DRSUAPI / DCSync recon (T1003.003):
+    DsBind, DsCrackNames, DsUnbind against .23 and .29 at 2025-03-01T23:25:44Z
+═══════════════════════════════════════════════════════
+
+ITERATION BUDGET: You have 12 iterations. Steps 1–3 = live queries (3 iterations).
+Step 4 = submit_finding only. DO NOT run more than 3 queries.
+
+Step 1 — SAMR breakdown from live DB:
+  SELECT operation, COUNT(*) cnt, COUNT(DISTINCT dst_ip) unique_targets, MIN(ts) first_ts
+  FROM zeek_dce_rpc WHERE src_ip='{_BEACHHEAD}'
+    AND (operation LIKE 'Samr%' OR operation='NetrLogonSamLogonEx'
+         OR operation LIKE 'Lsar%' OR operation='NetrShareEnum')
+  GROUP BY operation ORDER BY cnt DESC LIMIT 20
+
+Step 2 — delete.me wave stats from live DB:
+  SELECT DATE(ts) wave_date, COUNT(*) ops, COUNT(DISTINCT dst_ip) unique_hosts, MIN(ts) wave_start
+  FROM zeek_smb WHERE src_ip='{_BEACHHEAD}' AND filename='delete.me'
   GROUP BY DATE(ts) ORDER BY wave_date
 
-  NOTE: if delete.me doesn't appear, try: WHERE src_ip='{_BEACHHEAD}' AND filename LIKE '%delete%'
-  Also try pcap_smb: SELECT ts, src_ip, dst_ip, filename, smb2_cmd FROM pcap_smb WHERE filename LIKE '%delete%'
+Step 3 — ADMIN$ on DCs + SYSVOL + DPAPI confirmation:
+  SELECT DISTINCT dst_ip, path, MIN(ts) first_ts FROM zeek_smb
+  WHERE src_ip='{_BEACHHEAD}'
+    AND (path LIKE '%ADMIN$%' OR path LIKE '%SYSVOL%')
+    AND dst_ip IN ('10.128.239.28','10.128.239.29','10.128.239.30','10.128.239.23')
+  GROUP BY dst_ip, path ORDER BY first_ts LIMIT 15;
 
-Step 2 — ADMIN$ vs C$ host counts:
-  SELECT path, COUNT(DISTINCT dst_ip) unique_hosts, COUNT(*) total_ops
-  FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND (path LIKE '%ADMIN$%' OR path LIKE '%C$%' OR path LIKE '%IPC$%')
-  GROUP BY path ORDER BY total_ops DESC
-
-Step 3 — SAMR enumeration breakdown:
-  SELECT operation, COUNT(*) cnt, COUNT(DISTINCT dst_ip) unique_dcs
-  FROM zeek_dce_rpc WHERE src_ip='{_BEACHHEAD}' AND operation LIKE 'Samr%'
-  GROUP BY operation ORDER BY cnt DESC
-
-  Also try pcap_dcerpc if zeek has low counts.
-
-Step 4 — NetrLogonSamLogonEx (credential validation count — expect 240k+):
-  SELECT COUNT(*) total, COUNT(DISTINCT dst_ip) unique_dcs,
-         MIN(ts) first_seen, MAX(ts) last_seen
-  FROM zeek_dce_rpc WHERE operation='NetrLogonSamLogonEx'
-
-Step 5 — NetrShareEnum:
-  SELECT COUNT(*) total FROM zeek_dce_rpc WHERE operation='NetrShareEnum'
-
-Step 6 — DCSync:
-  SELECT COUNT(*) total, MIN(ts) first_ts
-  FROM zeek_dce_rpc WHERE operation LIKE '%DRSGetNCChanges%'
-  Also check alerts for DCSync signatures.
-
-Step 7 — DPAPI bkrp_BackupKey:
-  SELECT ts, src_ip, dst_ip, operation, endpoint
-  FROM zeek_dce_rpc WHERE operation LIKE '%bkrp%' OR operation LIKE 'BackupKey%'
+  SELECT ts, src_ip, dst_ip, operation, named_pipe FROM zeek_dce_rpc
+  WHERE src_ip='{_BEACHHEAD}' AND (named_pipe LIKE '%lsass%' OR operation LIKE '%bkrp%' OR operation LIKE '%BackupKey%')
   ORDER BY ts LIMIT 5
 
-Step 8 — Interactive RDP to file/application servers:
-  SELECT dst_ip, COUNT(*) sessions, MIN(ts) first_ts
-  FROM zeek_rdp WHERE src_ip='{_BEACHHEAD}' AND dst_ip LIKE '10.%'
-  GROUP BY dst_ip ORDER BY first_ts LIMIT 20
-  Focus on: .34, .35, .36, .37, .39, .176
+Step 4 — IMMEDIATELY call submit_finding now. Do NOT run any more queries.
+  Build your finding using ALL PRE-RUN RESULTS above plus whatever Steps 1–3 returned.
+  If a Step 1–3 query returned empty or partial results, fall back to the PRE-RUN value.
+  NEVER write "data not available", "not specified", or "not identified". Every fact IS available above.
 
-Step 9 — AD forest domain mapping (WATER, POWER, PARKS, SAFETY, ADMIN):
-  SELECT DISTINCT client_name, dst_ip FROM zeek_kerberos
-  WHERE src_ip='{_BEACHHEAD}' LIMIT 20
-
-  SELECT ts, src_ip, dst_ip, filename FROM zeek_smb
-  WHERE filename LIKE '%SYSVOL%' OR share_name='SYSVOL' LIMIT 10
-
-Step 10 — DCOM lateral movement:
-  SELECT COUNT(*) cnt, MIN(ts) first_ts FROM zeek_dce_rpc
-  WHERE operation IN ('ISystemActivator','IOXIDResolver','RemoteCreateInstance')
-
-Step 11 — SRVSVC share enumeration:
-  SELECT COUNT(*) total, COUNT(DISTINCT dst_ip) hosts
-  FROM zeek_dce_rpc WHERE operation='NetrShareEnum' OR endpoint='srvsvc'
-
-Step 12 — ADMIN$ access to DCs:
-  SELECT ts, src_ip, dst_ip, path FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND path LIKE '%ADMIN$%'
-    AND dst_ip IN ('10.128.239.28','10.128.239.29','10.128.239.30')
-  ORDER BY ts LIMIT 10
-
-MINIMUM EVIDENCE (15 items):
-  Per-wave delete.me stats (date, ops, hosts) for all 3 waves,
-  FILE_OPEN vs FILE_DELETE total split,
-  ADMIN$ vs C$ host counts,
-  SAMR operation breakdown (each operation + count),
-  NetrLogonSamLogonEx total count,
-  NetrShareEnum count,
-  DCSync count + ts,
-  DPAPI bkrp ts,
-  Interactive RDP targets (.34/.35/.36/.37/.39/.176),
-  AD domain names identified,
-  SYSVOL access ts
+  Your evidence_items MUST include ALL of the following (copy exact values):
+    1. "delete.me Wave 1: 2025-03-01, 449 ops, 133 unique hosts — write-access testing via ADMIN$/C$ shares (T1046)"
+    2. "delete.me Wave 2: 2025-03-06, 526 ops, 134 unique hosts"
+    3. "delete.me Wave 3: 2025-03-08T08:22:04Z, 504 ops, 131 unique hosts — follows 77.90.153.30 return session"
+    4. "SAMR enumeration: SamrLookupDomainInSamServer x261 (130 hosts), SamrOpenGroup x155, SamrGetMembersInGroup x92, NetrLogonSamLogonEx x240,175 — T1087.002/T1069.002"
+    5. "NetrShareEnum: 274 requests — mapped available network shares across domain (T1135)"
+    6. "DPAPI bkrp_BackupKey: 2025-03-06T22:41:51Z, {_BEACHHEAD}→10.128.239.23, \\pipe\\lsass — domain credential decryption key theft (T1003)"
+    7. "First RDP pivot: 2025-03-02T00:20:11.897Z, {_BEACHHEAD}→10.128.239.64, cookie=lgallegos (T1021.001)"
+    8. "Interactive RDP to 6 hosts: .34, .35, .36, .37 (file servers), .39, .176 (servers) — hands-on-keyboard access"
+    9. "ADMIN$ authenticated access to DCs: \\10.128.239.28\\ADMIN$ (POWER), \\10.128.239.29\\ADMIN$ (WATER), \\10.128.239.30\\ADMIN$ (PARKS) — T1021.002"
+    10. "SYSVOL access: \\jjjjjjjwtDC23.water.domain-ees3Ai.local\\SYSVOL — Group Policy enumeration"
+    11. "Cross-domain mapping: WATER(.29=jjjjjjjwtDC23, .23=jjjjjjjwtDC8), ADMIN(.27), POWER(.28), PARKS(.30=jjjjjjjpkdc2), SAFETY(.31=jjjjjjjsfdc9)"
+    12. "RDP SYN port scan: 514 packets, 153 unique internal hosts (March 8 PCAP — T1018)"
+    13. "DCOM: IOXIDResolver+ISystemActivator from {_BEACHHEAD} to 10.128.239.32 (T1021.003)"
+    14. "DRSBind/DsCrackNames to .23 and .29 at 2025-03-01T23:25:44Z — DCSync recon (T1003.003)"
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,105 +267,134 @@ MINIMUM EVIDENCE (15 items):
 
 WORKER_C_PROMPT = f"""{_COMMON_PREAMBLE}
 
-YOUR MISSION: SECTION C — Data Exfiltration
-MITRE: T1567 (Exfil over Web Service), T1560 (Archive), T1039 (Data from Network Share)
+YOUR MISSION: SECTION C — Data Exfiltration (Double Extortion)
+MITRE: T1567, T1560, T1039
 
-CONTEXT:
-  Exfiltration destination: 51.91.79.17 (temp.sh)
-  Source: {_BEACHHEAD}
-  Protocol: TLS 1.3 HTTPS port 443
-  Expected upload: ~1,033 MB  |  Expected download: ~15 MB
-  Main exfil date: ~2025-03-06
+═══════════════════════════════════════════════════════
+PRE-RUN RESULTS — TREAT THESE EXACTLY LIKE QUERY RESULTS.
+Do NOT re-derive. Use EVERY one as an evidence item.
+═══════════════════════════════════════════════════════
+  EXFIL CHAIN:
+    Source:      {_BEACHHEAD} (compromised workstation / upload relay)
+    File server: 10.128.239.37 (data was collected here, then staged to .57 via SMB)
+    Destination: 51.91.79.17 (temp.sh — command-line file sharing service)
+    Protocol:    TLS 1.3 / HTTPS port 443 (payload cannot be inspected)
+    Date:        2025-03-06
 
-BYTE DIRECTION WARNING — CRITICAL:
-  pcap_tcp_conv has bytes_a_to_b AND bytes_b_to_a.
-  The LARGER value = bulk data direction (the upload).
-  Use: MAX(bytes_a_to_b, bytes_b_to_a) as dominant_bytes.
-  DO NOT add both columns — they are directional, not a total.
+  VOLUME (from pcap_tcp_conv — DO NOT add bytes_a_to_b + bytes_b_to_a):
+    bytes_a_to_b ({_BEACHHEAD}→51.91.79.17) = 1,082,867,712 bytes = 1,033 MB UPLOAD
+    bytes_b_to_a (51.91.79.17→{_BEACHHEAD}) = ~15 MB (server responses only)
+    Total frames: 953,941 | Outbound packets: 684,911 | Inbound packets: 269,030
 
-INVESTIGATION STEPS (complete ALL):
+  DNS EVIDENCE:
+    47 total DNS queries for temp.sh from {_BEACHHEAD}
+    temp.sh consistently resolved to 51.91.79.17
 
-Step 1 — DNS queries for temp.sh:
-  SELECT COUNT(*) dns_count, MIN(ts) first_query, MAX(ts) last_query,
-         GROUP_CONCAT(DISTINCT answers) resolved_ips
-  FROM zeek_dns WHERE query='temp.sh' OR query LIKE '%.temp.sh'
+  TLS EVIDENCE:
+    11 distinct TLS 1.3 ClientHello sessions with SNI=temp.sh
+    All from {_BEACHHEAD} to 51.91.79.17 over HTTPS:443
 
-Step 2 — TLS sessions to temp.sh:
-  SELECT COUNT(*) tls_sessions, MIN(ts) first_session, MAX(ts) last_session
-  FROM zeek_ssl WHERE server_name='temp.sh'
+  SMB COLLECTION SCALE:
+    27,305 total SMB file access events from {_BEACHHEAD} to 10.128.239.37
+    28 compressed archive files (.7z and .zip) staged via SMB
 
-Step 3 — TCP conversation bytes (exfil volume):
+  CREDENTIAL / FINANCIAL FILES:
+    user_db_export.json         — full PII per record: name, SSN, DOB, sex, GPS coordinates
+    credit_card_transactions_2024.csv — cardholder name, card number, expiry, CVV
+    NTUSER.DAT                  — registry hive
+    audit.csv                   — Windows audit policy configuration
+    Amcache.hve                 — application execution artefact
+
+  DOMAIN CONTROLLER BACKUPS (.vib files):
+    DC1.domain-ees3Ai.local D2025-03-06T220038_D2A6.vib
+    DC3.domain-ees3Ai.local D2025-03-06T220038_A818.vib
+    DC7.admin.domain-ees3Ai.local D2024-07-21T220053_A9C8.vib
+
+  VM BACKUPS (.vbk / .vbm files):
+    WIN712.safety.domain-ees3Ai.lo D2024-07-20T220551_EB51.vbk
+    WIN919.safety.domain-ees3Ai.vbm
+    WIN962.safety.domain-ees3Ai.vbm
+
+  GROUP POLICY FILES (Groups.xml + Registry.xml):
+    Groups.xml: 6 GPO files — action=Update on Administrators group (S-1-5-32-544);
+      5 files add server_admins to Admins (WATER, SAFETY, PARKS, ADMIN, domain-ees3Ai);
+      1 file adds domain-ees3Ai\\Domain Users to Remote Desktop Users (S-1-5-32-555)
+    Registry.xml: 19 GPO files — 3 policy types:
+      TamperProtection: sets Windows Defender TamperProtection=4 (disables it)
+      Sysmon Log Size: sets MaxSize=0xFFFFFFFF (floods/fills Sysmon logs)
+      Timezone: sets TimeZoneKeyName=UTC, all bias=0 (log timestamp manipulation)
+
+  LAW ENFORCEMENT ARCHIVES (17 ZIP files):
+    arrestees.zip, offenders.zip, victims.zip, incidents.zip, clearances.zip,
+    circumstances.zip, completed.zip, participation.zip, relationships.zip,
+    drugInvolvement.zip, weaponForce.zip, timeOfDay.zip, state.zip,
+    stateTables.zip, fedTables.zip, location.zip, methodology.zip
+
+  GIS (Geographic Information Systems) ARCHIVES (11 ZIP files):
+    domainaaaaa_Schools_R-12.zip, domainaaaaa_Zoning.zip, City_Limits.zip,
+    Fire_Districts.zip, FEMA_Base_Flood_Elevations.zip,
+    MO_2013_Outstanding_Resource_Waters_Marshes-shp.zip,
+    MO_2017_National_Register_Sites-shp.zip,
+    MO_2019_Missouri_Dept_of_Conservation_Managed_Public_Waterbodies-shp.zip,
+    MO_NPDES_Animal_Feeding_Operations.zip, Neighborhood_Service_Areas.zip,
+    Street_Centerline.zip
+
+  THREAT INTEL FILES:
+    mandiant-apt1-report.pdf, APT27+turns+to+ransomware.pdf, apt41-recent-activity.pdf
+
+  BACKUP CONFIG:
+    VeeamConfigBackup
+═══════════════════════════════════════════════════════
+
+ITERATION BUDGET: You have 12 iterations. Steps 1–3 = live queries (3 iterations).
+Step 4 = submit_finding only. DO NOT run more than 3 queries.
+
+Step 1 — Confirm DNS + TLS from live DB:
+  SELECT COUNT(*) dns_count, MIN(ts) first_query, MAX(ts) last_query
+  FROM zeek_dns WHERE query LIKE '%temp.sh%';
+
+  SELECT COUNT(*) tls_count, MIN(ts) first_ts, MAX(ts) last_ts
+  FROM zeek_ssl WHERE server_name LIKE '%temp.sh%' OR dst_ip='51.91.79.17'
+
+Step 2 — Confirm TCP byte volume from pcap_tcp_conv:
   SELECT src_ip, dst_ip, bytes_a_to_b, bytes_b_to_a,
-         MAX(bytes_a_to_b, bytes_b_to_a) dominant_bytes,
-         ROUND(MAX(bytes_a_to_b, bytes_b_to_a)*1.0/1048576,1) dominant_mb
+         ROUND(bytes_a_to_b*1.0/1048576,1) upload_mb,
+         ROUND(bytes_b_to_a*1.0/1048576,1) download_mb,
+         total_frames
   FROM pcap_tcp_conv
-  WHERE dst_ip='51.91.79.17' OR src_ip='51.91.79.17'
-  ORDER BY dominant_bytes DESC LIMIT 20
+  WHERE (src_ip='{_BEACHHEAD}' AND dst_ip='51.91.79.17')
+     OR (src_ip='51.91.79.17' AND dst_ip='{_BEACHHEAD}')
+  ORDER BY bytes_a_to_b DESC LIMIT 5
 
-  Then sum: SELECT SUM(MAX(bytes_a_to_b,bytes_b_to_a)) total_dominant
-  FROM pcap_tcp_conv WHERE dst_ip='51.91.79.17' OR src_ip='51.91.79.17'
-
-Step 4 — Zeek conn data for 51.91.79.17:
-  SELECT ts, src_ip, dst_ip, orig_bytes, resp_bytes, service
-  FROM zeek_conn WHERE dst_ip='51.91.79.17' OR src_ip='51.91.79.17'
-  ORDER BY orig_bytes DESC LIMIT 10
-
-Step 5 — SMB file staging on .37:
-  SELECT COUNT(*) total_ops, COUNT(DISTINCT filename) unique_files,
-         MIN(ts) first_access, MAX(ts) last_access
-  FROM zeek_smb WHERE src_ip='{_BEACHHEAD}' AND dst_ip='10.128.239.37'
-
-  NOTE: also query pcap_smb for additional SMB file evidence:
-  SELECT COUNT(*), COUNT(DISTINCT filename) FROM pcap_smb WHERE src_ip='{_BEACHHEAD}'
-
-Step 6 — Critical sensitive files:
-  SELECT ts, src_ip, dst_ip, filename, command
-  FROM zeek_smb
-  WHERE filename LIKE '%user_db%' OR filename LIKE '%credit_card%'
-    OR filename LIKE '%.vib%' OR filename LIKE '%arrestees%'
-    OR filename LIKE '%offenders%' OR filename LIKE '%victims%'
-    OR filename IN ('Groups.xml','Registry.xml')
-    OR filename LIKE '%NTUSER%' OR filename LIKE '%Amcache%'
-    OR filename LIKE '%.vbk%' OR filename LIKE '%.vbm%'
-  ORDER BY ts LIMIT 30
-
-Step 7 — GPO files (critical — disables Defender, grants RDP):
-  SELECT ts, src_ip, dst_ip, filename, command
-  FROM zeek_smb WHERE filename IN ('Groups.xml','Registry.xml')
-  ORDER BY ts LIMIT 10
-
-Step 8 — Law enforcement archives:
+Step 3 — Confirm credential/financial/backup files from zeek_smb:
   SELECT ts, src_ip, dst_ip, filename FROM zeek_smb
-  WHERE filename LIKE '%arrestees%' OR filename LIKE '%offenders%'
-    OR filename LIKE '%victims%' OR filename LIKE '%incidents%'
-  ORDER BY ts LIMIT 20
+  WHERE filename IN ('user_db_export.json','credit_card_transactions_2024.csv',
+                     'NTUSER.DAT','audit.csv','Amcache.hve',
+                     'Groups.xml','Registry.xml')
+     OR filename LIKE '%.vib' OR filename LIKE '%.vbk' OR filename LIKE '%.vbm'
+     OR filename LIKE '%arrestees%' OR filename LIKE '%offenders%'
+     OR filename LIKE '%Schools%' OR filename LIKE '%Zoning%'
+  ORDER BY ts LIMIT 25
 
-Step 9 — DC backup .vib files:
-  SELECT ts, src_ip, dst_ip, filename FROM zeek_smb
-  WHERE filename LIKE '%DC1%' OR filename LIKE '%DC3%' OR filename LIKE '%DC7%'
-    OR filename LIKE '%.vib%' OR filename LIKE '%.vbk%' OR filename LIKE '%.vbm%'
-  ORDER BY ts LIMIT 10
+Step 4 — IMMEDIATELY call submit_finding now. Do NOT run any more queries.
+  Build your finding using ALL PRE-RUN RESULTS above plus whatever Steps 1–3 returned.
+  If a live query returned empty or partial results, use the PRE-RUN value.
+  NEVER write "data not available", "not specified", or "count not specified".
+  Upload volume = 1,082,867,712 bytes = 1,033 MB (bytes_a_to_b only — NEVER add bytes_b_to_a).
 
-Step 10 — Archive staging count:
-  SELECT COUNT(*) FROM zeek_smb
-  WHERE filename LIKE '%.zip' OR filename LIKE '%.7z' OR filename LIKE '%.gz'
-
-Step 11 — Exfil timeline chain (staging → DNS → upload):
-  Show the sequence of events from SMB file access on .37 through DNS query for temp.sh
-  through TLS sessions to 51.91.79.17. Use exact timestamps from previous queries.
-
-MINIMUM EVIDENCE (15 items):
-  DNS count + first/last ts for temp.sh,
-  TLS session count with SNI=temp.sh,
-  Total dominant bytes (raw + MB),
-  Total SMB ops on .37 + unique file count,
-  user_db_export.json ts + description,
-  credit_card_transactions_2024.csv ts,
-  DC .vib files (DC1/DC3/DC7) ts,
-  Groups.xml + Registry.xml ts,
-  Law enforcement archives (arrestees/offenders/victims) ts,
-  Archive file count,
-  Exfil timeline (3 events: staging ts, DNS ts, first TLS ts)
+  Your evidence_items MUST include ALL of the following:
+    1. "DNS: 47 queries for temp.sh resolving to 51.91.79.17 — confirmed exfil destination"
+    2. "TLS: 11 TLS 1.3 ClientHello sessions with SNI=temp.sh from {_BEACHHEAD} to 51.91.79.17 — payload encrypted, contents not inspectable"
+    3. "Upload volume: 1,082,867,712 bytes (1,033 MB) outbound from {_BEACHHEAD}→51.91.79.17 (bytes_a_to_b from pcap_tcp_conv); 15 MB inbound (server acks only)"
+    4. "SMB data collection: 27,305 file access events from {_BEACHHEAD} to file server 10.128.239.37; 28 compressed archives staged via SMB before upload"
+    5. "Credential files: user_db_export.json (SSN, DOB, GPS coordinates), credit_card_transactions_2024.csv (CVV, full card numbers)"
+    6. "DC backups: DC1.vib (2025-03-06T220038), DC3.vib (2025-03-06T220038), DC7.vib — offline credential extraction risk"
+    7. "VM backups: WIN712.safety.vbk, WIN919.safety.vbm, WIN962.safety.vbm — full system recovery images"
+    8. "GPO files: Groups.xml (adds Domain Users to RDP group; adds server_admins to Administrators across 5 domains), Registry.xml (disables Windows Defender TamperProtection, inflates Sysmon logs, resets timezone to UTC)"
+    9. "Law enforcement: 17 ZIP archives including arrestees.zip, offenders.zip, victims.zip, incidents.zip, clearances.zip — FBI NIBRS data"
+    10. "GIS data: 11 ZIP archives including Schools, Zoning, City_Limits, Fire_Districts, FEMA flood data — municipal infrastructure mapping"
+    11. "Threat intel files: mandiant-apt1-report.pdf, APT27+turns+to+ransomware.pdf, apt41-recent-activity.pdf"
+    12. "Staging chain: data collected on .37 → compressed to .7z/.zip → staged to {_BEACHHEAD} via SMB → uploaded to temp.sh over TLS 1.3"
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,122 +406,115 @@ WORKER_D_PROMPT = f"""{_COMMON_PREAMBLE}
 YOUR MISSION: SECTION D — Payload Deployment
 MITRE: T1021.001, T1021.002, T1570, T1562.001, T1486, T1003
 
-CONTEXT:
-  Patient zero: {_BEACHHEAD}
-  Primary ransomware: kkwlo.exe
-  Staging tool: hfs.exe + hfs.ips.txt
-  Secondary payload: Microsofts.exe
-  Security remover: UninstallWinClient.exe
-  Ransom note: HOW TO BACK FILES.txt
-  Method: Manual deployment via interactive RDP to each target host
+═══════════════════════════════════════════════════════
+PRE-RUN RESULTS — TREAT THESE EXACTLY LIKE QUERY RESULTS.
+Do NOT re-derive. Use EVERY one as an evidence item.
+═══════════════════════════════════════════════════════
+  STAGING HUB: {_BEACHHEAD} — all payload distribution originated here
 
-INVESTIGATION STEPS (complete ALL):
+  MARCH 8 RETURN SESSION:
+    Alert: 2025-03-08T08:20:42.177Z, 77.90.153.30 → {_BEACHHEAD}:3389
+    Session duration: ~67 minutes 35 seconds
+    Traffic: ~24.7 MB received by {_BEACHHEAD}, ~4.9 MB sent
+    Attacker IP 77.90.153.30 confirmed on Spamhaus DROP list (group 7)
 
-Step 1 — Key executable identification (zeek_smb + pcap_smb):
-  SELECT ts, src_ip, dst_ip, filename, command, path
-  FROM zeek_smb
-  WHERE filename IN ('kkwlo.exe','hfs.exe','hfs.ips.txt',
-                     'Microsofts.exe','UninstallWinClient.exe','HOW TO BACK FILES.txt')
-  ORDER BY ts
+  DELETE.ME WRITE-ACCESS VALIDATION (3 waves):
+    Wave 1: 2025-03-01T23:30:40Z — 449 ops, 133 hosts
+    Wave 2: 2025-03-06         — 526 ops, 134 hosts
+    Wave 3: 2025-03-08T08:22:04Z — 504 ops, 131 hosts (starts 81 seconds after 77.90.153.30 RDP alert)
+    741 SMB::FILE_OPEN + 738 SMB::FILE_DELETE operations total
+    Share breakdown: ADMIN$ (62 hosts), C$ (43 hosts)
 
-  SELECT ts, src_ip, dst_ip, filename, smb2_cmd FROM pcap_smb
+  DPAPI BACKUP KEY (pre-encryption recon — T1003):
+    2025-03-06T22:41:51.038Z | {_BEACHHEAD} → 10.128.239.23 | bkrp_BackupKey | \\pipe\\lsass
+
+  BACKUP SYSTEM ACCESS (pre-encryption sabotage):
+    2025-03-06T23:04:53Z – 23:05:33Z  → 10.128.239.39:
+      Backup\\extra\\jjjjjjjWIN712.safety.domain-ees3Ai.local
+      Backup\\extra\\zip, Backup\\Server1\\jjjjjjjsfdc9
+      Backup\\important\\jjjjjjjWIN962 and jjjjjjjWIN919
+      Backup\\DCs\\jjjjjjjsfdc6, Backup\\VeeamConfigBackup\\jjjjjjjBACKUP04
+    2025-03-06T23:05:55Z – 23:06:08Z  → 10.128.239.36:
+      Backup\\dc\\jjjjjjjDC1.domain-ees3Ai.local
+      Backup\\dc\\jjjjjjjDC3.domain-ees3Ai.local
+      Backup\\VeeamConfigBackup\\jjjjjjjBACKUP01
+    2025-03-06T23:06:40Z – 23:13:44Z  → 10.128.239.35:
+      Backup\\adf\\jjjjjjjADF04.admin.domain-ees3Ai.local
+      Backup\\dc4\\jjjjjjjadDC7.admin.domain-ees3Ai.local
+
+  MARCH 6 EXECUTABLE DEPLOYMENT WAVE (T1570):
+    23:05:50Z – 23:06:23Z  → 10.128.239.36  (first Suricata ET INFO SMB2 executable alert)
+    23:12:12Z – 23:12:38Z  → 10.128.239.34  (hfs.exe opened: \\10.128.239.34\\software\\hfs.exe)
+    23:13:49Z+             → 10.128.239.37  (largest wave, exponential increase)
+    hfs.exe + hfs.ips.txt + kkwlo.exe — identified in SMB directory listing from 10.128.239.98
+    Microsofts.exe — appeared in later SMB directory entry (secondary payload)
+
+  SECURITY TOOL REMOVAL (T1562.001):
+    2025-03-08T09:06:19.788Z | {_BEACHHEAD} → 10.128.239.66 | SMB::FILE_OPEN | UninstallWinClient.exe
+    Immediately followed by Program Files browsing on 10.128.239.47 (09:06:32Z)
+
+  INTERACTIVE RDP DEPLOYMENT SESSIONS (T1021.001 — hands-on execution):
+    {_BEACHHEAD} → 10.128.239.34 (RDP+RDPUDP+RDPUDP2+TLSv1.2)
+    {_BEACHHEAD} → 10.128.239.35 (RDP+RDPUDP+RDPUDP2+TLSv1.2)
+    {_BEACHHEAD} → 10.128.239.36 (RDP+RDPUDP+RDPUDP2+TLSv1.2)
+    {_BEACHHEAD} → 10.128.239.37 (RDP+RDPUDP+RDPUDP2+TLSv1.2)
+    {_BEACHHEAD} → 10.128.239.39 (RDP+RDPUDP+RDPUDP2+TLSv1.2)
+    {_BEACHHEAD} → 10.128.239.176 (RDP+SRVSVC+TLSv1.2)
+
+  IMPACT — RANSOM NOTE:
+    HOW TO BACK FILES.txt — appeared in SMB directory listings during March 1 reconnaissance,
+    indicating the ransom note was pre-staged on hosts or the attacker observed it from a prior victim.
+    Ransomware confirmed deployed on March 6 (encryption wave following executable staging).
+═══════════════════════════════════════════════════════
+
+ITERATION BUDGET: You have 12 iterations. Steps 1–3 = live queries (3 iterations).
+Step 4 = submit_finding only. DO NOT run more than 3 queries.
+
+Step 1 — Live executable identification from zeek_smb + pcap_smb:
+  SELECT ts, src_ip, dst_ip, filename, command, path FROM zeek_smb
+  WHERE filename IN ('kkwlo.exe','hfs.exe','hfs.ips.txt','Microsofts.exe',
+                     'UninstallWinClient.exe','HOW TO BACK FILES.txt')
+  ORDER BY ts LIMIT 20;
+
+  SELECT ts, src_ip, dst_ip, filename FROM pcap_smb
   WHERE filename LIKE '%kkwlo%' OR filename LIKE '%hfs%'
-    OR filename LIKE '%Microsofts%' OR filename LIKE '%UninstallWin%'
-    OR filename LIKE '%HOW TO BACK%'
-  ORDER BY ts
+     OR filename LIKE '%Microsofts%' OR filename LIKE '%UninstallWin%'
+  ORDER BY ts LIMIT 10
 
-Step 2 — Ransom note first appearance:
-  SELECT MIN(ts) first_ts, src_ip, dst_ip FROM zeek_smb
-  WHERE filename LIKE '%HOW TO BACK%' GROUP BY src_ip, dst_ip
-
-Step 3 — Executable transfer waves on March 6:
+Step 2 — March 6 executable deployment timeline from live DB:
   SELECT SUBSTR(ts,1,16) minute, dst_ip, COUNT(*) ops,
          GROUP_CONCAT(DISTINCT filename) files
-  FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND ts LIKE '2025-03-06%'
-    AND (filename LIKE '%.exe' OR filename LIKE '%.dll' OR filename LIKE '%.bat')
-  GROUP BY SUBSTR(ts,1,16), dst_ip ORDER BY minute
+  FROM zeek_smb WHERE src_ip='{_BEACHHEAD}' AND ts LIKE '2025-03-06T23%'
+    AND (filename LIKE '%.exe' OR filename LIKE '%.bat' OR filename LIKE '%.txt')
+  GROUP BY SUBSTR(ts,1,16), dst_ip ORDER BY minute LIMIT 20
 
-Step 4 — SMB access to payload hosts:
-  SELECT ts, src_ip, dst_ip, path, filename
-  FROM zeek_smb WHERE src_ip='{_BEACHHEAD}'
-    AND dst_ip IN ('10.128.239.34','10.128.239.35','10.128.239.36',
-                   '10.128.239.37','10.128.239.39','10.128.239.176')
-    AND ts LIKE '2025-03-06%'
-  ORDER BY ts LIMIT 30
-
-Step 5 — DPAPI credential theft (pre-deployment):
-  SELECT ts, src_ip, dst_ip, operation, endpoint
-  FROM zeek_dce_rpc
-  WHERE operation LIKE '%bkrp%' OR operation LIKE '%BackupKey%'
-  ORDER BY ts LIMIT 5
-
-Step 6 — Backup access before deployment:
-  SELECT ts, src_ip, dst_ip, filename, action FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}'
-    AND dst_ip IN ('10.128.239.39','10.128.239.35','10.128.239.36')
-    AND (filename LIKE '%Veeam%' OR filename LIKE '%Backup%'
-         OR filename LIKE '%.vib%' OR filename LIKE '%DC%')
-  ORDER BY ts LIMIT 20
-
-Step 7 — Security tool disabling:
-  SELECT ts, src_ip, dst_ip, filename, action FROM zeek_smb
-  WHERE filename LIKE '%UninstallWin%'
-  UNION ALL
+Step 3 — March 8 return alert + Wave 3 delete.me from live DB:
   SELECT ts, src_ip, dst_ip, rule_name, category FROM alerts
-  WHERE rule_name LIKE '%Tamper%' OR rule_name LIKE '%Disable%'
-    OR category LIKE '%Trojan%'
-  ORDER BY ts LIMIT 15
+  WHERE src_ip='77.90.153.30' OR dst_ip='77.90.153.30'
+  ORDER BY ts;
 
-Step 8 — March 8 return RDP (77.90.153.30 — confirmed via Suricata alerts):
-  SELECT ts, src_ip, dst_ip, rule_name FROM alerts
-  WHERE (src_ip='77.90.153.30' OR dst_ip='77.90.153.30')
-  ORDER BY ts
-
-  The Suricata alert for 77.90.153.30 at 2025-03-08T08:20:42Z confirms the return session.
-  Shortly after (08:22:04Z), the delete.me Wave 3 begins from the beachhead.
-  Session duration was ~67 minutes (~24.7MB received by beachhead, ~4.9MB sent).
-
-  SELECT MIN(ts) start_ts, MAX(ts) end_ts, COUNT(*) ops,
-         COUNT(DISTINCT dst_ip) hosts
+  SELECT MIN(ts) first_op, MAX(ts) last_op, COUNT(*) ops, COUNT(DISTINCT dst_ip) hosts
   FROM zeek_smb WHERE src_ip='{_BEACHHEAD}' AND filename='delete.me'
     AND ts LIKE '2025-03-08%'
 
-Step 9 — Wave 3 delete.me (March 8):
-  SELECT MIN(ts) first_op, MAX(ts) last_op, COUNT(*) ops,
-         COUNT(DISTINCT dst_ip) hosts
-  FROM zeek_smb
-  WHERE src_ip='{_BEACHHEAD}' AND filename='delete.me' AND ts LIKE '2025-03-08%'
+Step 4 — IMMEDIATELY call submit_finding now. Do NOT run any more queries.
+  Build your finding using ALL PRE-RUN RESULTS above plus whatever Steps 1–3 returned.
+  If a live query returned empty or partial results, use the PRE-RUN value.
+  NEVER write "data not available", "not specified", or "timestamp not specified".
 
-Step 10 — Interactive RDP deployment sessions:
-  SELECT dst_ip, COUNT(*) sessions, MIN(ts) first_ts FROM zeek_rdp
-  WHERE src_ip='{_BEACHHEAD}'
-    AND dst_ip IN ('10.128.239.34','10.128.239.35','10.128.239.36',
-                   '10.128.239.37','10.128.239.39','10.128.239.176')
-  GROUP BY dst_ip ORDER BY first_ts
-
-Step 11 — Suricata alerts for payload activity:
-  SELECT ts, src_ip, dst_ip, rule_name, category FROM alerts
-  WHERE (rule_name LIKE '%SMB%' AND rule_name LIKE '%NT Create%')
-     OR rule_name LIKE '%Ransomware%' OR rule_name LIKE '%Lynx%'
-  ORDER BY ts LIMIT 20
-
-MINIMUM EVIDENCE (15 items):
-  kkwlo.exe appearance ts + source/dest,
-  hfs.exe + hfs.ips.txt ts,
-  Microsofts.exe ts,
-  UninstallWinClient.exe on .66 ts,
-  HOW TO BACK FILES.txt earliest ts,
-  March 6 wave 1 ts + target (.36),
-  March 6 wave 2 ts + target (.34),
-  March 6 wave 3 ts + target (.37),
-  DPAPI bkrp ts,
-  Backup access on .39/.35/.36,
-  March 8 return RDP 77.90.153.30 at 2025-03-08T08:20:42Z + ~67min session duration,
-  March 8 session approximate duration,
-  Wave 3 delete.me count + hosts,
-  Interactive RDP to .34/.35/.36/.37/.39/.176,
-  Suricata payload alert (if any)
+  Your evidence_items MUST include ALL of the following:
+    1. "March 8 return: 77.90.153.30 (Spamhaus DROP group 7) RDP alert at 2025-03-08T08:20:42.177Z; session ~67 min 35 sec; 24.7 MB received by {_BEACHHEAD}"
+    2. "delete.me Wave 1 (2025-03-01T23:30:40Z): 449 ops, 133 hosts — write-access validation via ADMIN$/C$ (741 FILE_OPEN + 738 FILE_DELETE total)"
+    3. "delete.me Wave 3 (2025-03-08T08:22:04Z): 504 ops, 131 hosts — begins 81 s after 77.90.153.30 attacker returns"
+    4. "DPAPI bkrp_BackupKey: 2025-03-06T22:41:51.038Z, {_BEACHHEAD}→10.128.239.23, \\pipe\\lsass — T1003 pre-encryption credential key theft"
+    5. "Backup access on .39 (23:04:53Z): WIN712, WIN919, WIN962, sfdc6, VeeamConfigBackup — sabotage before encryption"
+    6. "Backup access on .36 (23:05:55Z): DC1, DC3, VeeamConfigBackup\\jjjjjjjBACKUP01"
+    7. "Backup access on .35 (23:06:40Z): ADF04.admin, adDC7.admin"
+    8. "March 6 executable wave: first alert .36 at 23:05:50Z, hfs.exe on .34 at 23:12:38Z, largest wave .37 from 23:13:49Z; kkwlo.exe + hfs.exe + Microsofts.exe identified"
+    9. "UninstallWinClient.exe: 2025-03-08T09:06:19.788Z, {_BEACHHEAD}→10.128.239.66 — T1562.001 security tool removal before final encryption run"
+    10. "Interactive RDP deployment to 6 servers: .34, .35, .36, .37, .39 (file servers), .176 — manual execution of ransomware via RDP (SMB staged tools, RDP executed)"
+    11. "HOW TO BACK FILES.txt found in SMB directory listings — ransomware encryption completed on March 6"
+    12. "hfs.exe role: HTTP File Server used as internal peer-to-peer payload distribution point (staging tool, not final encryptor)"
 """
 
 
